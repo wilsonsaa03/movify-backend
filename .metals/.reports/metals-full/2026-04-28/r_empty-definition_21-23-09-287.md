@@ -1,3 +1,14 @@
+error id: file:///C:/Users/USUARIO/Desktop/Estudios/univalle/2026-1/Desarrollo%20II/Movify/backend/movify-backend/movify-backend/src/main/java/com/movify/backend/Modelo/Usuario.java:
+file:///C:/Users/USUARIO/Desktop/Estudios/univalle/2026-1/Desarrollo%20II/Movify/backend/movify-backend/movify-backend/src/main/java/com/movify/backend/Modelo/Usuario.java
+empty definition using pc, found symbol in pc: 
+empty definition using semanticdb
+empty definition using fallback
+non-local guesses:
+
+offset: 716
+uri: file:///C:/Users/USUARIO/Desktop/Estudios/univalle/2026-1/Desarrollo%20II/Movify/backend/movify-backend/movify-backend/src/main/java/com/movify/backend/Modelo/Usuario.java
+text:
+```scala
 package com.movify.backend.Modelo;
 
 import java.time.LocalDateTime;
@@ -27,12 +38,11 @@ public class Usuario {
 
     @Column(unique = true, nullable = false)
     private String correo;
-    
-    
-    private String password;
+
+    private String@@ password;
     private String telefono;
 
-    //los roles son  cliente | conductor | admin
+    // cliente | conductor | admin
     private String rol;
 
     // activo | inactivo
@@ -41,3 +51,9 @@ public class Usuario {
     @Column(name = "fecha_registro")
     private LocalDateTime fechaRegistro = LocalDateTime.now();
 }
+```
+
+
+#### Short summary: 
+
+empty definition using pc, found symbol in pc: 

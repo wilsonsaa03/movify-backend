@@ -1,3 +1,14 @@
+error id: file:///C:/Users/USUARIO/Desktop/Estudios/univalle/2026-1/Desarrollo%20II/Movify/backend/movify-backend/movify-backend/src/main/java/com/movify/backend/Controlador/AutenticacionControlador.java:_empty_/`<any>`#getContrasena#
+file:///C:/Users/USUARIO/Desktop/Estudios/univalle/2026-1/Desarrollo%20II/Movify/backend/movify-backend/movify-backend/src/main/java/com/movify/backend/Controlador/AutenticacionControlador.java
+empty definition using pc, found symbol in pc: _empty_/`<any>`#getContrasena#
+empty definition using semanticdb
+empty definition using fallback
+non-local guesses:
+
+offset: 1125
+uri: file:///C:/Users/USUARIO/Desktop/Estudios/univalle/2026-1/Desarrollo%20II/Movify/backend/movify-backend/movify-backend/src/main/java/com/movify/backend/Controlador/AutenticacionControlador.java
+text:
+```scala
 package com.movify.backend.Controlador;
 
 //import com.movify.backend.Modelo.Usuario;
@@ -24,11 +35,17 @@ public class AutenticacionControlador {
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody Map<String, String> credenciales) {
         String correo = credenciales.get("correo");
-        String password = credenciales.get("password");
+        String password = credenciales.get("contrasena");
 
         return usuarioRepositorio.findByCorreo(correo)
-            .filter(u -> u.getPassword().equals(password))
+            .filter(u -> u.getC@@ontrasena().equals(password))
             .map(u -> ResponseEntity.ok(u))
             .orElse(ResponseEntity.status(401).build());
     }
 }
+```
+
+
+#### Short summary: 
+
+empty definition using pc, found symbol in pc: _empty_/`<any>`#getContrasena#
