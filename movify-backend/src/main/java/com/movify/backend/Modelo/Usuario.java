@@ -1,22 +1,12 @@
 package com.movify.backend.Modelo;
 
 import java.time.LocalDateTime;
-
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import jakarta.persistence.*;
+import lombok.*;
 
 @Entity
 @Table(name = "usuarios")
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
+@Data @NoArgsConstructor @AllArgsConstructor
 public class Usuario {
 
     @Id
@@ -27,12 +17,11 @@ public class Usuario {
 
     @Column(unique = true, nullable = false)
     private String correo;
-    
-    
+
     private String password;
     private String telefono;
 
-    //los roles son  cliente | conductor | admin
+    // cliente | conductor | admin
     private String rol;
 
     // activo | inactivo
