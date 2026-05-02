@@ -1,3 +1,14 @@
+error id: file:///C:/Users/USUARIO/Desktop/Estudios/univalle/2026-1/Desarrollo%20II/Movify/backend/movify-backend/movify-backend/src/main/java/com/movify/backend/Controlador/AutenticacionControlador.java:_empty_/RequestBody#
+file:///C:/Users/USUARIO/Desktop/Estudios/univalle/2026-1/Desarrollo%20II/Movify/backend/movify-backend/movify-backend/src/main/java/com/movify/backend/Controlador/AutenticacionControlador.java
+empty definition using pc, found symbol in pc: _empty_/RequestBody#
+empty definition using semanticdb
+empty definition using fallback
+non-local guesses:
+
+offset: 1029
+uri: file:///C:/Users/USUARIO/Desktop/Estudios/univalle/2026-1/Desarrollo%20II/Movify/backend/movify-backend/movify-backend/src/main/java/com/movify/backend/Controlador/AutenticacionControlador.java
+text:
+```scala
 package com.movify.backend.Controlador;
 
 import com.movify.backend.Servicio.AutenticacionServicio;
@@ -25,7 +36,7 @@ public class AutenticacionControlador {
     }
 
     @PostMapping("/login")
-    public ResponseEntity<?> login(@RequestBody Map<String, String> credenciales) {
+    public ResponseEntity<?> login(@Request@@Body Map<String, String> credenciales) {
         try {
             return ResponseEntity.ok(autenticacionServicio.login(
                 credenciales.get("correo"),
@@ -45,3 +56,9 @@ public class AutenticacionControlador {
         }
     }
 }
+```
+
+
+#### Short summary: 
+
+empty definition using pc, found symbol in pc: _empty_/RequestBody#

@@ -2,14 +2,12 @@ package com.movify.backend;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.ComponentScan;
 
-// Eliminamos el 'exclude' para que Spring busque la configuración de PostgreSQL
 @SpringBootApplication
+@ComponentScan(basePackages = "com.movify.backend")
 public class MovifyBackendApplication {
-
     public static void main(String[] args) {
-        // Esta línea es la que realmente "enciende" el motor de Spring Boot
         SpringApplication.run(MovifyBackendApplication.class, args);
     }
-
 }

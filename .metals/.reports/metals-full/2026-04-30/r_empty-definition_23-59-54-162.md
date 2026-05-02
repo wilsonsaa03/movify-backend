@@ -1,3 +1,14 @@
+error id: file:///C:/Users/USUARIO/Desktop/Estudios/univalle/2026-1/Desarrollo%20II/Movify/backend/movify-backend/movify-backend/src/main/java/com/movify/backend/Controlador/AutenticacionControlador.java:_empty_/RestController#
+file:///C:/Users/USUARIO/Desktop/Estudios/univalle/2026-1/Desarrollo%20II/Movify/backend/movify-backend/movify-backend/src/main/java/com/movify/backend/Controlador/AutenticacionControlador.java
+empty definition using pc, found symbol in pc: _empty_/RestController#
+empty definition using semanticdb
+empty definition using fallback
+non-local guesses:
+
+offset: 622
+uri: file:///C:/Users/USUARIO/Desktop/Estudios/univalle/2026-1/Desarrollo%20II/Movify/backend/movify-backend/movify-backend/src/main/java/com/movify/backend/Controlador/AutenticacionControlador.java
+text:
+```scala
 package com.movify.backend.Controlador;
 
 import com.movify.backend.Servicio.AutenticacionServicio;
@@ -11,7 +22,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import java.util.Map;
 
-@RestController
+@RestContro@@ller
 @RequestMapping("/api/auth")
 @CrossOrigin(origins = "*")
 public class AutenticacionControlador {
@@ -45,3 +56,9 @@ public class AutenticacionControlador {
         }
     }
 }
+```
+
+
+#### Short summary: 
+
+empty definition using pc, found symbol in pc: _empty_/RestController#

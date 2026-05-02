@@ -1,3 +1,14 @@
+error id: file:///C:/Users/USUARIO/Desktop/Estudios/univalle/2026-1/Desarrollo%20II/Movify/backend/movify-backend/movify-backend/src/main/java/com/movify/backend/Controlador/AutenticacionControlador.java:java/util/Map#of(+1).
+file:///C:/Users/USUARIO/Desktop/Estudios/univalle/2026-1/Desarrollo%20II/Movify/backend/movify-backend/movify-backend/src/main/java/com/movify/backend/Controlador/AutenticacionControlador.java
+empty definition using pc, found symbol in pc: java/util/Map#of(+1).
+empty definition using semanticdb
+empty definition using fallback
+non-local guesses:
+
+offset: 908
+uri: file:///C:/Users/USUARIO/Desktop/Estudios/univalle/2026-1/Desarrollo%20II/Movify/backend/movify-backend/movify-backend/src/main/java/com/movify/backend/Controlador/AutenticacionControlador.java
+text:
+```scala
 package com.movify.backend.Controlador;
 
 import com.movify.backend.Servicio.AutenticacionServicio;
@@ -21,7 +32,7 @@ public class AutenticacionControlador {
 
     @GetMapping("/ping")
     public ResponseEntity<?> ping() {
-        return ResponseEntity.ok(Map.of("estado", "MoviFY Backend activo"));
+        return ResponseEntity.ok(Map.@@of("estado", "MoviFY Backend activo"));
     }
 
     @PostMapping("/login")
@@ -45,3 +56,9 @@ public class AutenticacionControlador {
         }
     }
 }
+```
+
+
+#### Short summary: 
+
+empty definition using pc, found symbol in pc: java/util/Map#of(+1).
