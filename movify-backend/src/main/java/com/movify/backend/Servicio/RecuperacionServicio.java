@@ -8,67 +8,92 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+
 import java.time.LocalDateTime;
 import java.util.UUID;
 
+/**
+ * Servicio encargado de gestionar la recuperación de contraseña.
+ * Maneja dos pasos:
+ *   1. Generar y enviar el enlace de recuperación al correo del usuario.
+ *   2. Validar el token y actualizar la contraseña en la base de datos.
+ */
 @Service
 public class RecuperacionServicio {
 
-    @Autowired
-    private UsuarioRepositorio usuarioRepositorio;
+    // Repositorio para consultar y guardar usuarios en la BD
+    @Autowired private UsuarioRepositorio usuarioRepositorio;
 
-    @Autowired
-    private TokenRecuperacionRepositorio tokenRepositorio;
+    // Repositorio para guardar y buscar tokens de recuperación
+    @Autowired private TokenRecuperacionRepositorio tokenRepositorio;
 
-    @Autowired
-    private EmailServicio emailServicio;
+    // Servicio que se encarga de enviar el correo electrónico
+    @Autowired private EmailServicio emailServicio;
 
-    @Autowired
-    private PasswordEncoder passwordEncoder;
+    // Encriptador de contraseñas con BCrypt
+    @Autowired private PasswordEncoder passwordEncoder;
 
+    // URL del frontend, leída desde application.properties
+    // Se usa para construir el enlace de recuperación
     @Value("${app.frontend.url}")
     private String frontendUrl;
 
-    // Paso 1: recibe el correo y envía el enlace
+    // ── PASO 1: SOLICITAR RECUPERACIÓN ────────────────────────────────────
+    /**
+     * Recibe el correo del usuario, genera un token único,
+     * lo guarda en la BD y envía el enlace al correo.
+     * El enlace expira en 30 minutos.
+     */
     public void solicitarRecuperacion(String correo) {
+
+        // Verificar que el correo exista en la BD
         Usuario usuario = usuarioRepositorio.findByCorreo(correo)
             .orElseThrow(() -> new RuntimeException("No existe una cuenta con ese correo"));
 
-        // Generar token único
+        // Generar un token único e irrepetible
         String token = UUID.randomUUID().toString();
 
-        // Guardar token en BD
+        // Crear el registro del token con su fecha de expiración
         TokenRecuperacion tokenRecuperacion = new TokenRecuperacion();
         tokenRecuperacion.setToken(token);
         tokenRecuperacion.setUsuario(usuario);
         tokenRecuperacion.setFechaExpiracion(LocalDateTime.now().plusMinutes(30));
         tokenRecuperacion.setUsado(false);
+
+        // Guardar el token en la base de datos
         tokenRepositorio.save(tokenRecuperacion);
 
-        // Enviar correo con enlace
+        // Construir el enlace y enviarlo al correo del usuario
         String enlace = frontendUrl + "/restablecer-password?token=" + token;
         emailServicio.enviarCorreoRecuperacion(correo, enlace);
     }
 
-    // Paso 2: recibe el token y la nueva contraseña
+    // ── PASO 2: RESTABLECER CONTRASEÑA ────────────────────────────────────
+    /**
+     * Recibe el token del enlace y la nueva contraseña.
+     * Valida que el token sea válido, no haya sido usado y no haya expirado.
+     * Luego actualiza la contraseña del usuario en la BD.
+     */
     public void restablecerPassword(String token, String nuevaPassword) {
+
+        // Buscar el token en la BD, lanzar error si no existe
         TokenRecuperacion tokenRecuperacion = tokenRepositorio.findByToken(token)
             .orElseThrow(() -> new RuntimeException("Token inválido"));
 
-        if (tokenRecuperacion.getUsado()) {
+        // Verificar que el token no haya sido usado anteriormente
+        if (tokenRecuperacion.getUsado())
             throw new RuntimeException("Este enlace ya fue usado");
-        }
 
-        if (tokenRecuperacion.getFechaExpiracion().isBefore(LocalDateTime.now())) {
+        // Verificar que el token no haya expirado (válido por 30 minutos)
+        if (tokenRecuperacion.getFechaExpiracion().isBefore(LocalDateTime.now()))
             throw new RuntimeException("El enlace ha expirado");
-        }
 
-        // Actualizar contraseña
+        // Encriptar la nueva contraseña y actualizarla en la BD
         Usuario usuario = tokenRecuperacion.getUsuario();
         usuario.setPassword(passwordEncoder.encode(nuevaPassword));
         usuarioRepositorio.save(usuario);
 
-        // Marcar token como usado
+        // Marcar el token como usado para que no pueda reutilizarse
         tokenRecuperacion.setUsado(true);
         tokenRepositorio.save(tokenRecuperacion);
     }
