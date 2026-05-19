@@ -31,8 +31,3 @@ build/
 
 ### VS Code ###
 .vscode/
-
-.metals/
-node_modules/
-*.log
-*.db

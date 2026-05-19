@@ -6,7 +6,10 @@ import lombok.*;
 
 @Entity
 @Table(name = "usuarios")
-@Data @NoArgsConstructor @AllArgsConstructor
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
 public class Usuario {
 
     @Id
@@ -20,13 +23,25 @@ public class Usuario {
 
     private String password;
     private String telefono;
+    private String foto;
 
-    // cliente | conductor | admin
     private String rol;
-
-    // activo | inactivo
-    private String estado = "activo";
+    private String estado;
 
     @Column(name = "fecha_registro")
-    private LocalDateTime fechaRegistro = LocalDateTime.now();
+    private LocalDateTime fechaRegistro;
+
+    @Column(name = "token_recuperacion")
+    private String tokenRecuperacion;
+
+    @Column(name = "token_expiracion")
+    private LocalDateTime tokenExpiracion;
+
+    @PrePersist
+    public void prePersist() {
+        if (this.estado == null)
+            this.estado = "activo";
+        if (this.fechaRegistro == null)
+            this.fechaRegistro = LocalDateTime.now();
+    }
 }
