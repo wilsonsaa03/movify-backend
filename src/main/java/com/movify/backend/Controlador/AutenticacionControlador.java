@@ -19,8 +19,62 @@ public class AutenticacionControlador {
     @Autowired
     private UsuarioRepositorio usuarioRepositorio;
 
+    // =========================
+    // LOGIN NORMAL
+    // =========================
+
+    @PostMapping("/login")
+    public ResponseEntity<?> login(
+            @RequestBody Map<String, String> data) {
+
+        String correo = data.get("correo");
+        String password = data.get("password");
+
+        Optional<Usuario> usuarioOptional = usuarioRepositorio.findByCorreo(correo);
+
+        // VALIDAR USUARIO
+
+        if (usuarioOptional.isEmpty()) {
+
+            return ResponseEntity
+                    .badRequest()
+                    .body(Map.of(
+                            "error",
+                            "Correo no encontrado"));
+        }
+
+        Usuario usuario = usuarioOptional.get();
+
+        // VALIDAR PASSWORD
+
+        if (!usuario.getPassword().equals(password)) {
+
+            return ResponseEntity
+                    .badRequest()
+                    .body(Map.of(
+                            "error",
+                            "Contraseña incorrecta"));
+        }
+
+        // RESPUESTA
+
+        Map<String, Object> response = new HashMap<>();
+
+        response.put("token", "login-exitoso");
+        response.put("rol", usuario.getRol());
+        response.put("nombre", usuario.getNombre());
+        response.put("foto", usuario.getFoto());
+
+        return ResponseEntity.ok(response);
+    }
+
+    // =========================
+    // LOGIN GOOGLE
+    // =========================
+
     @PostMapping("/login-google")
-    public ResponseEntity<?> loginGoogle(@RequestBody Map<String, String> data) {
+    public ResponseEntity<?> loginGoogle(
+            @RequestBody Map<String, String> data) {
 
         String correo = data.get("correo");
 
