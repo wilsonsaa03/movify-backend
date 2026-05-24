@@ -3,97 +3,103 @@ package com.movify.backend.Servicio;
 import com.movify.backend.Base_de_datos.UsuarioRepositorio;
 import com.movify.backend.Modelo.Usuario;
 import com.movify.backend.Seguridad.JwtUtil;
-import org.springframework.beans.factory.annotation.Autowired;
+import jakarta.mail.MessagingException;
+import jakarta.mail.internet.MimeMessage;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
-import jakarta.mail.internet.MimeMessage;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
+@Slf4j
 @Service
+@RequiredArgsConstructor
 public class AutenticacionServicio {
 
-    @Autowired
-    private UsuarioRepositorio usuarioRepositorio;
-    @Autowired
-    private PasswordEncoder passwordEncoder;
-    @Autowired
-    private JwtUtil jwtUtil;
-    @Autowired
-    private JavaMailSender mailSender;
+    private final UsuarioRepositorio usuarioRepositorio;
+    private final PasswordEncoder passwordEncoder;
+    private final JwtUtil jwtUtil;
+    private final JavaMailSender mailSender;
 
     @Value("${app.frontend.url}")
     private String frontendUrl;
 
+    @Value("${spring.mail.username}")
+    private String emailFrom;
+
     // =========================
-    // LOGIN NORMAL
+    // LOGIN
     // =========================
     public Map<String, Object> login(String correo, String password) {
         Usuario usuario = usuarioRepositorio.findByCorreo(correo)
-                .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
+                .orElseThrow(() -> new RuntimeException("Credenciales inválidas"));
 
-        if (!passwordEncoder.matches(password, usuario.getPassword()))
-            throw new RuntimeException("Contraseña incorrecta");
+        if (!passwordEncoder.matches(password, usuario.getPassword())) {
+            throw new RuntimeException("Credenciales inválidas");
+        }
 
-        if (!usuario.getEstado().equals("activo"))
-            throw new RuntimeException("Usuario inactivo");
+        if (!"activo".equalsIgnoreCase(usuario.getEstado())) {
+            throw new RuntimeException("Cuenta suspendida o inactiva");
+        }
 
-        enviarCorreoBienvenida(usuario.getCorreo(), usuario.getNombre());
+        // Intento de envío de correo de notificación de inicio de sesión
+        try {
+            enviarCorreoBienvenida(usuario.getCorreo(), usuario.getNombre());
+        } catch (Exception e) {
+            log.error("No se pudo enviar el correo de notificación a {}", correo);
+        }
+
         return buildRespuesta(usuario, "Login exitoso");
     }
 
     // =========================
     // REGISTRO
     // =========================
+    @Transactional
     public Map<String, Object> registro(Map<String, String> datos) {
-        if (usuarioRepositorio.existsByCorreo(datos.get("correo")))
+        if (usuarioRepositorio.existsByCorreo(datos.get("correo"))) {
             throw new RuntimeException("El correo ya está registrado");
+        }
 
         Usuario nuevo = new Usuario();
         nuevo.setNombre(datos.get("nombre"));
         nuevo.setCorreo(datos.get("correo"));
         nuevo.setPassword(passwordEncoder.encode(datos.get("password")));
-        nuevo.setRol(datos.getOrDefault("rol", "cliente"));
+        nuevo.setRol(datos.getOrDefault("rol", "cliente").toLowerCase());
         nuevo.setTelefono(datos.get("telefono"));
         nuevo.setEstado("activo");
+        nuevo.setFechaRegistro(LocalDateTime.now());
+
         usuarioRepositorio.save(nuevo);
+
+        // Envío de bienvenida tras registro exitoso
+        try {
+            enviarCorreoBienvenida(nuevo.getCorreo(), nuevo.getNombre());
+        } catch (Exception e) {
+            log.error("Error al enviar bienvenida tras registro a {}", nuevo.getCorreo());
+        }
 
         return buildRespuesta(nuevo, "Registro exitoso");
     }
 
     // =========================
-    // LOGIN GOOGLE
+    // LOGIN REDES SOCIALES
     // =========================
-    public Map<String, Object> loginGoogle(Map<String, String> datos) {
-        Usuario usuario = usuarioRepositorio.findByCorreo(datos.get("correo"))
-                .orElseGet(() -> {
-                    Usuario nuevo = new Usuario();
-                    nuevo.setNombre(datos.get("nombre"));
-                    nuevo.setCorreo(datos.get("correo"));
-                    nuevo.setFoto(datos.get("foto"));
-                    nuevo.setPassword(passwordEncoder.encode(UUID.randomUUID().toString()));
-                    nuevo.setRol("cliente");
-                    nuevo.setEstado("activo");
-                    return usuarioRepositorio.save(nuevo);
-                });
-
-        enviarCorreoBienvenida(usuario.getCorreo(), usuario.getNombre());
-        return buildRespuesta(usuario, "Login con Google exitoso");
-    }
-
-    // =========================
-    // LOGIN FACEBOOK
-    // =========================
-    public Map<String, Object> loginFacebook(Map<String, String> datos) {
+    @Transactional
+    public Map<String, Object> loginSocial(Map<String, String> datos, String proveedor) {
         String correo = datos.get("correo");
-        if (correo == null || correo.isEmpty())
-            correo = datos.get("facebookId") + "@facebook.movify";
+        
+        if (correo == null || correo.isEmpty()) {
+            correo = datos.get("id") + "@social." + proveedor + ".com";
+        }
 
         final String correoFinal = correo;
         Usuario usuario = usuarioRepositorio.findByCorreo(correoFinal)
@@ -102,22 +108,23 @@ public class AutenticacionServicio {
                     nuevo.setNombre(datos.get("nombre"));
                     nuevo.setCorreo(correoFinal);
                     nuevo.setFoto(datos.get("foto"));
-                    nuevo.setPassword(passwordEncoder.encode(UUID.randomUUID().toString()));
+                    nuevo.setPassword(passwordEncoder.encode("SOCIAL_AUTH_" + UUID.randomUUID()));
                     nuevo.setRol("cliente");
                     nuevo.setEstado("activo");
+                    nuevo.setFechaRegistro(LocalDateTime.now());
                     return usuarioRepositorio.save(nuevo);
                 });
 
-        enviarCorreoBienvenida(usuario.getCorreo(), usuario.getNombre());
-        return buildRespuesta(usuario, "Login con Facebook exitoso");
+        return buildRespuesta(usuario, "Login con " + proveedor + " exitoso");
     }
 
     // =========================
-    // RECUPERAR CONTRASEÑA
+    // RECUPERACIÓN
     // =========================
+    @Transactional
     public void solicitarRecuperacion(String correo) {
         Usuario usuario = usuarioRepositorio.findByCorreo(correo)
-                .orElseThrow(() -> new RuntimeException("No existe una cuenta con ese correo"));
+                .orElseThrow(() -> new RuntimeException("Si el correo existe, recibirás un enlace pronto"));
 
         String token = UUID.randomUUID().toString();
         usuario.setTokenRecuperacion(token);
@@ -125,100 +132,72 @@ public class AutenticacionServicio {
         usuarioRepositorio.save(usuario);
 
         String enlace = frontendUrl + "/restablecer-password?token=" + token;
-        enviarCorreoRecuperacion(correo, usuario.getNombre(), enlace);
-    }
-
-    public void restablecerPassword(String token, String nuevaPassword) {
-        Usuario usuario = usuarioRepositorio.findByTokenRecuperacion(token)
-                .orElseThrow(() -> new RuntimeException("Token inválido o expirado"));
-
-        if (usuario.getTokenExpiracion().isBefore(LocalDateTime.now()))
-            throw new RuntimeException("El enlace ha expirado");
-
-        usuario.setPassword(passwordEncoder.encode(nuevaPassword));
-        usuario.setTokenRecuperacion(null);
-        usuario.setTokenExpiracion(null);
-        usuarioRepositorio.save(usuario);
+        enviarCorreoTemplate(correo, "Recuperar contraseña - MoviFY", buildHtmlRecuperacion(usuario.getNombre(), enlace));
     }
 
     // =========================
-    // CORREO BIENVENIDA
+    // MÉTODOS PRIVADOS DE APOYO
     // =========================
-    private void enviarCorreoBienvenida(String destinatario, String nombre) {
+    
+    /**
+     * Implementación del método que faltaba para evitar el error de compilación.
+     */
+    private void enviarCorreoBienvenida(String correo, String nombre) {
+        String html = """
+            <div style='font-family: sans-serif; text-align: center; border: 1px solid #eee; padding: 20px;'>
+                <h1 style='color: #4ade80;'>¡Bienvenido a MoviFY!</h1>
+                <p>Hola <strong>%s</strong>, nos alegra que estés aquí.</p>
+                <p>Tu cuenta ha sido activada exitosamente. Ya puedes empezar a viajar o realizar envíos.</p>
+                <hr style='border: 0; border-top: 1px solid #eee; margin: 20px 0;'>
+                <small style='color: #888;'>Si no creaste esta cuenta, por favor contáctanos.</small>
+            </div>
+            """.formatted(nombre);
+
+        enviarCorreoTemplate(correo, "¡Bienvenido a MoviFY!", html);
+    }
+
+    private void enviarCorreoTemplate(String destinatario, String asunto, String html) {
         try {
             MimeMessage mensaje = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(mensaje, true, "UTF-8");
-            helper.setFrom("movify2.app@gmail.com");
+            helper.setFrom(emailFrom);
             helper.setTo(destinatario);
-            helper.setSubject("¡Bienvenido a MoviFY, " + nombre + "!");
-            helper.setText(
-                    "<div style='font-family:Segoe UI,sans-serif;max-width:520px;margin:auto;border-radius:16px;overflow:hidden;'>"
-                            +
-                            "<div style='background:linear-gradient(135deg,#1a1a2e,#0f3460);padding:32px;text-align:center;'>"
-                            +
-                            "<h1 style='color:#4ade80;margin:0;font-size:36px;'>MoviFY</h1>" +
-                            "<p style='color:#94a3b8;margin:8px 0 0;'>Tu aliado en movilidad</p></div>" +
-                            "<div style='background:#f8fafc;padding:36px 32px;'>" +
-                            "<h2 style='color:#1a1a2e;'>¡Hola, " + nombre + "! 👋</h2>" +
-                            "<p style='color:#475569;'>Has iniciado sesión exitosamente en <strong>MoviFY</strong>.</p>"
-                            +
-                            "<div style='background:white;border-radius:12px;padding:24px;margin:20px 0;border:1px solid #e2e8f0;'>"
-                            +
-                            "<p style='font-weight:700;color:#1a1a2e;margin:0 0 16px;'>Nuestros servicios:</p>" +
-                            "<p style='margin:8px 0;'>🏍️ <strong>Transporte</strong> — Viaja rápido en moto</p>" +
-                            "<p style='margin:8px 0;'>🛵 <strong>Domicilios</strong> — Recibe en tu puerta</p>" +
-                            "<p style='margin:8px 0;'>📦 <strong>Encomiendas</strong> — Envía paquetes</p></div>" +
-                            "</div></div>",
-                    true);
+            helper.setSubject(asunto);
+            helper.setText(html, true);
             mailSender.send(mensaje);
-        } catch (Exception e) {
-            System.err.println("Error enviando correo bienvenida: " + e.getMessage());
+            log.info("Correo '{}' enviado a {}", asunto, destinatario);
+        } catch (MessagingException e) {
+            log.error("Error crítico al enviar email: {}", e.getMessage());
         }
     }
 
-    // =========================
-    // CORREO RECUPERACIÓN
-    // =========================
-    private void enviarCorreoRecuperacion(String destinatario, String nombre, String enlace) {
-        try {
-            MimeMessage mensaje = mailSender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(mensaje, true, "UTF-8");
-            helper.setFrom("movify2.app@gmail.com");
-            helper.setTo(destinatario);
-            helper.setSubject("Recuperar contraseña - MoviFY");
-            helper.setText(
-                    "<div style='font-family:Segoe UI,sans-serif;max-width:500px;margin:auto;'>" +
-                            "<div style='background:#1a1a2e;padding:20px;text-align:center;border-radius:12px 12px 0 0;'>"
-                            +
-                            "<h1 style='color:#4ade80;margin:0;'>MoviFY</h1></div>" +
-                            "<div style='background:#f9f9f9;padding:30px;border-radius:0 0 12px 12px;'>" +
-                            "<h2 style='color:#1a1a2e;'>Hola, " + nombre + "</h2>" +
-                            "<p style='color:#555;'>Recibimos una solicitud para restablecer tu contraseña.</p>" +
-                            "<a href='" + enlace + "' style='display:inline-block;margin:20px 0;" +
-                            "background:#4ade80;color:#1a1a2e;padding:14px 28px;" +
-                            "border-radius:10px;text-decoration:none;font-weight:bold;'>Restablecer contraseña</a>" +
-                            "<p style='color:#999;font-size:13px;'>Este enlace expira en 30 minutos.</p>" +
-                            "<p style='color:#999;font-size:13px;'>Si no solicitaste esto, ignora este correo.</p>" +
-                            "</div></div>",
-                    true);
-            mailSender.send(mensaje);
-        } catch (Exception e) {
-            throw new RuntimeException("Error al enviar correo de recuperación");
-        }
-    }
-
-    // =========================
-    // HELPER
-    // =========================
     private Map<String, Object> buildRespuesta(Usuario usuario, String mensaje) {
-        String token = jwtUtil.generarToken(usuario.getCorreo(), usuario.getRol());
         Map<String, Object> respuesta = new HashMap<>();
-        respuesta.put("token", token);
-        respuesta.put("correo", usuario.getCorreo());
-        respuesta.put("rol", usuario.getRol());
-        respuesta.put("nombre", usuario.getNombre());
-        respuesta.put("foto", usuario.getFoto() != null ? usuario.getFoto() : "");
+        respuesta.put("token", jwtUtil.generarToken(usuario.getCorreo(), usuario.getRol()));
+        
+        // Estructura de usuario para el frontend
+        Map<String, String> userMap = new HashMap<>();
+        userMap.put("nombre", usuario.getNombre());
+        userMap.put("correo", usuario.getCorreo());
+        userMap.put("rol", usuario.getRol());
+        userMap.put("foto", usuario.getFoto() != null ? usuario.getFoto() : "");
+        
+        respuesta.put("user", userMap);
         respuesta.put("mensaje", mensaje);
         return respuesta;
+    }
+
+    private String buildHtmlRecuperacion(String nombre, String enlace) {
+        return """
+            <div style='font-family: sans-serif; text-align: center; padding: 20px;'>
+                <h2>Hola %s</h2>
+                <p>Recibimos una solicitud para restablecer tu contraseña.</p>
+                <p>Haz clic en el botón de abajo para continuar:</p>
+                <a href='%s' style='background: #4ade80; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;'>
+                    Restablecer Contraseña
+                </a>
+                <p style='margin-top: 20px; font-size: 0.8em; color: #666;'>Este enlace expirará en 30 minutos.</p>
+            </div>
+            """.formatted(nombre, enlace);
     }
 }
