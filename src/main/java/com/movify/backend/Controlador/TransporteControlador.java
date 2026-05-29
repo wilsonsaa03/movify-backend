@@ -323,10 +323,13 @@ public class TransporteControlador {
         try {
             List<Map<String, Object>> servicio = db.queryForList("""
                         SELECT
-                            s.id, s.estado, s.conductor_id, c.nombre as conductor_nombre,
-                            c.foto as conductor_foto, c.latitud, c.longitud, s.origen_lat, s.origen_lng
+                            s.id, s.estado, s.conductor_id, c.nombre as conductor_nombre, u.nombre as usuario_nombre,
+                            c.foto as conductor_foto, c.latitud, c.longitud, s.origen_lat, s.origen_lng,
+                            s.destino_lat, s.destino_lng, s.distancia_km, s.tarifa,
+                            c.latitud as conductor_lat, c.longitud as conductor_lng
                         FROM servicios s
                         LEFT JOIN conductores c ON s.conductor_id = c.id
+                        JOIN usuarios u ON s.usuario_id = u.id
                         WHERE s.id = ?
                     """, servicioId);
 
@@ -375,9 +378,12 @@ public class TransporteControlador {
                     new Thread(() -> {
                         try {
                             // 1. Obtener datos del servicio y ubicación del conductor
-                            Map<String, Object> s = db.queryForMap("SELECT origen_lat, origen_lng, destino_lat, destino_lng FROM servicios WHERE id = ?", servicioId);
-                            Map<String, Object> c = db.queryForMap("SELECT latitud, longitud FROM conductores WHERE id = ?", conductorId);
-                            
+                            Map<String, Object> s = db.queryForMap(
+                                    "SELECT origen_lat, origen_lng, destino_lat, destino_lng FROM servicios WHERE id = ?",
+                                    servicioId);
+                            Map<String, Object> c = db
+                                    .queryForMap("SELECT latitud, longitud FROM conductores WHERE id = ?", conductorId);
+
                             double oLat = (double) s.get("origen_lat");
                             double oLng = (double) s.get("origen_lng");
                             double dLat = (double) s.get("destino_lat");
@@ -385,24 +391,17 @@ public class TransporteControlador {
                             double cLat = (double) c.get("latitud");
                             double cLng = (double) c.get("longitud");
 
-                            // ESTADO: EN_CAMINO (Conductor va hacia el usuario)
-                            db.update("UPDATE servicios SET estado = 'EN_CAMINO' WHERE id = ?", servicioId);
-                            System.out.println("🚀 Conductor #" + conductorId + " en camino a recoger al usuario.");
-                            
+                            // Mantenerse en ACEPTADO mientras va al origen
+                            System.out.println("🚀 Conductor #" + conductorId + " aceptó y va al origen.");
                             List<double[]> rutaAlOrigen = obtenerRutaOSRM(cLat, cLng, oLat, oLng);
-                            simularRecorridoConEstado(conductorId, servicioId, rutaAlOrigen, "EN_CAMINO");
+                            simularRecorridoConEstado(conductorId, servicioId, rutaAlOrigen, "ACEPTADO");
 
-                            // ESTADO: LLEGÓ_RECOGIDA
-                            db.update("UPDATE servicios SET estado = 'LLEGÓ_RECOGIDA' WHERE id = ?", servicioId);
-                            System.out.println("📍 Conductor #" + conductorId + " llegó al punto de recogida.");
-                            Thread.sleep(5000); // Espera 5 segundos de abordaje
-
-                            // ESTADO: EN_VIAJE (Hacia el destino final)
-                            db.update("UPDATE servicios SET estado = 'EN_VIAJE' WHERE id = ?", servicioId);
+                            // ESTADO: EN_CAMINO (Inicia viaje al destino)
+                            db.update("UPDATE servicios SET estado = 'EN_CAMINO' WHERE id = ?", servicioId);
                             System.out.println("🛣️ Viaje #" + servicioId + " iniciado hacia el destino.");
-                            
+
                             List<double[]> rutaAlDestino = obtenerRutaOSRM(oLat, oLng, dLat, dLng);
-                            simularRecorridoConEstado(conductorId, servicioId, rutaAlDestino, "EN_VIAJE");
+                            simularRecorridoConEstado(conductorId, servicioId, rutaAlDestino, "EN_CAMINO");
 
                             // ESTADO: FINALIZADO
                             db.update("UPDATE servicios SET estado = ?, fecha_fin = NOW() WHERE id = ?",
