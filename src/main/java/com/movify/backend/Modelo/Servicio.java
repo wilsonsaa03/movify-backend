@@ -1,45 +1,55 @@
 package com.movify.backend.Modelo;
 
-import java.time.LocalDateTime;
-import jakarta.persistence.*;
-import lombok.*;
+import java.time.OffsetDateTime;
+
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 
 @Entity
 @Table(name = "servicios")
-@Data @NoArgsConstructor @AllArgsConstructor
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
 public class Servicio {
+
+    public enum EstadoServicio {
+        PENDIENTE,
+        ACEPTADO,
+        RECHAZADO,
+        FINALIZADO,
+        CANCELADO
+    }
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
+    private Long usuarioId;
+    private Long conductorId; // Puede ser null si aún no ha sido aceptado
+    private Double origenLat;
+    private Double origenLng;
+    private Double destinoLat;
+    private Double destinoLng;
+    private Double distanciaKm;
+    private Double tarifa;
 
-    @ManyToOne
-    @JoinColumn(name = "usuario_id")
-    private Usuario usuario;
+    @Builder.Default
+    @Enumerated(EnumType.STRING) // Esto asegura que en la DB se guarde "PENDIENTE" y no 0
+    private EstadoServicio estado = EstadoServicio.PENDIENTE;
 
-    @ManyToOne
-    @JoinColumn(name = "conductor_id")
-    private Conductor conductor;
-
-    @ManyToOne
-    @JoinColumn(name = "vehiculo_id")
-    private Vehiculo vehiculo;
-
-    // transporte | domicilio | encomienda
-    private String tipo;
-
-    // solicitado | aceptado | en_curso | finalizado | cancelado
-    private String estado = "solicitado";
-
-    private String origen;
-    private String destino;
-
-    @Column(name = "fecha_solicitud")
-    private LocalDateTime fechaSolicitud = LocalDateTime.now();
-
-    @Column(name = "fecha_finalizacion")
-    private LocalDateTime fechaFinalizacion;
-
-    @Column(name = "monto_total")
-    private Double montoTotal;
+    @Builder.Default
+    private OffsetDateTime fechaSolicitud = OffsetDateTime.now();
+    private OffsetDateTime fechaInicio;
+    private OffsetDateTime fechaFin;
 }

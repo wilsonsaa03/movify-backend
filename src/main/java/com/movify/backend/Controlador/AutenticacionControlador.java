@@ -61,6 +61,7 @@ public class AutenticacionControlador {
         Map<String, Object> response = new HashMap<>();
 
         response.put("token", "login-exitoso");
+        response.put("id", usuario.getId());
         response.put("rol", usuario.getRol());
         response.put("nombre", usuario.getNombre());
         response.put("foto", usuario.getFoto());

@@ -231,6 +231,7 @@ public class ConductorControlador {
 
                         Map<String, Object> respuesta = new HashMap<>();
 
+                        respuesta.put("conductor_id", conductor.getId());
                         // =========================
                         // DATOS PERSONALES
                         // =========================
