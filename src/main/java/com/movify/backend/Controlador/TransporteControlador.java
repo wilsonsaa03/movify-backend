@@ -193,8 +193,8 @@ public class TransporteControlador {
 
                 new Thread(() -> {
                     try {
-                        // 1. Aumentamos la espera a 60 segundos para darte tiempo de probar
-                        Thread.sleep(60000);
+                        // 1. Espera de 10 segundos antes de la simulación automática
+                        Thread.sleep(10000);
 
                         // Verificar si un conductor real ya aceptó el viaje
                         String checkSql = "SELECT estado FROM servicios WHERE id = ?";
@@ -370,10 +370,50 @@ public class TransporteControlador {
                     db.update(
                             "UPDATE notificaciones_conductor SET estado_notificacion = ?, fecha_respuesta = NOW() WHERE servicio_id = ? AND conductor_id = ?",
                             NotificacionConductor.EstadoNotificacion.ACEPTADA.name(), servicioId, conductorId);
-                    // TODO: Notificar al usuario (WebSocket) que su viaje fue aceptado por este
-                    // conductor
-                    // TODO: Notificar a los otros conductores (WebSocket) que el viaje ya no está
-                    // disponible
+
+                    // INICIAR SIMULACIÓN DE RECORRIDO POST-ACEPTACIÓN
+                    new Thread(() -> {
+                        try {
+                            // 1. Obtener datos del servicio y ubicación del conductor
+                            Map<String, Object> s = db.queryForMap("SELECT origen_lat, origen_lng, destino_lat, destino_lng FROM servicios WHERE id = ?", servicioId);
+                            Map<String, Object> c = db.queryForMap("SELECT latitud, longitud FROM conductores WHERE id = ?", conductorId);
+                            
+                            double oLat = (double) s.get("origen_lat");
+                            double oLng = (double) s.get("origen_lng");
+                            double dLat = (double) s.get("destino_lat");
+                            double dLng = (double) s.get("destino_lng");
+                            double cLat = (double) c.get("latitud");
+                            double cLng = (double) c.get("longitud");
+
+                            // ESTADO: EN_CAMINO (Conductor va hacia el usuario)
+                            db.update("UPDATE servicios SET estado = 'EN_CAMINO' WHERE id = ?", servicioId);
+                            System.out.println("🚀 Conductor #" + conductorId + " en camino a recoger al usuario.");
+                            
+                            List<double[]> rutaAlOrigen = obtenerRutaOSRM(cLat, cLng, oLat, oLng);
+                            simularRecorridoConEstado(conductorId, servicioId, rutaAlOrigen, "EN_CAMINO");
+
+                            // ESTADO: LLEGÓ_RECOGIDA
+                            db.update("UPDATE servicios SET estado = 'LLEGÓ_RECOGIDA' WHERE id = ?", servicioId);
+                            System.out.println("📍 Conductor #" + conductorId + " llegó al punto de recogida.");
+                            Thread.sleep(5000); // Espera 5 segundos de abordaje
+
+                            // ESTADO: EN_VIAJE (Hacia el destino final)
+                            db.update("UPDATE servicios SET estado = 'EN_VIAJE' WHERE id = ?", servicioId);
+                            System.out.println("🛣️ Viaje #" + servicioId + " iniciado hacia el destino.");
+                            
+                            List<double[]> rutaAlDestino = obtenerRutaOSRM(oLat, oLng, dLat, dLng);
+                            simularRecorridoConEstado(conductorId, servicioId, rutaAlDestino, "EN_VIAJE");
+
+                            // ESTADO: FINALIZADO
+                            db.update("UPDATE servicios SET estado = ?, fecha_fin = NOW() WHERE id = ?",
+                                    Servicio.EstadoServicio.FINALIZADO.name(), servicioId);
+                            System.out.println("🏁 Viaje #" + servicioId + " finalizado con éxito.");
+
+                        } catch (Exception e) {
+                            System.err.println("❌ Error en simulación de viaje: " + e.getMessage());
+                        }
+                    }).start();
+
                     return ResponseEntity
                             .ok(Map.of("message", "Servicio aceptado con éxito.", "servicioId", servicioId));
                 } else {
