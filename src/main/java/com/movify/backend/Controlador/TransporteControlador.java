@@ -57,7 +57,10 @@ public class TransporteControlador {
                     """); // Cierre de la consulta SQL
             return ResponseEntity.ok(resultado);
         } catch (Exception e) {
-            return ResponseEntity.status(500).body("Error en la consulta: " + e.getMessage());
+            java.util.Map<String, Object> err = new java.util.HashMap<>();
+            err.put("error", "Error al obtener conductores");
+            err.put("details", e.getMessage());
+            return ResponseEntity.status(500).body(err);
         }
     }
 
@@ -71,7 +74,9 @@ public class TransporteControlador {
             db.update("UPDATE conductores SET en_linea = true WHERE id = ?", id);
             return ResponseEntity.ok(Map.of("message", "Conductor " + id + " ahora está en línea"));
         } catch (Exception e) {
-            return ResponseEntity.status(400).body("Error: El ID debe ser un número válido. " + e.getMessage());
+            return ResponseEntity.status(400).body(Map.of(
+                "error", "ID inválido",
+                "details", e.getMessage()));
         }
     }
 
@@ -89,7 +94,9 @@ public class TransporteControlador {
                     lat, lng, id);
             return ResponseEntity.ok(Map.of("message", "Ubicación de conductor " + id + " actualizada"));
         } catch (Exception e) {
-            return ResponseEntity.status(400).body("Error en datos: " + e.getMessage());
+            return ResponseEntity.status(400).body(Map.of(
+                "error", "Error en actualización de ubicación",
+                "details", e.getMessage()));
         }
     }
 
@@ -222,15 +229,16 @@ public class TransporteControlador {
 
                             // 2. HACIA EL ORIGEN (Ruta real por calles)
                             List<double[]> rutaAlOrigen = obtenerRutaOSRM(cLat, cLng, origenLat, origenLng);
-                            simularRecorrido(conductorSimuladoId, rutaAlOrigen);
+                        simularRecorridoConEstado(conductorSimuladoId, servicioId, rutaAlOrigen, Servicio.EstadoServicio.ACEPTADO);
 
                             System.out.println("🤖 Conductor simulado llegó al usuario.");
                             Thread.sleep(2000); // Pausa de recogida
 
                             // 3. HACIA EL DESTINO (Ruta real por calles)
+                        db.update("UPDATE servicios SET estado = ? WHERE id = ?", Servicio.EstadoServicio.EN_CAMINO.name(), servicioId);
                             List<double[]> rutaAlDestino = obtenerRutaOSRM(origenLat, origenLng, destinoLat,
                                     destinoLng);
-                            simularRecorrido(conductorSimuladoId, rutaAlDestino);
+                        simularRecorridoConEstado(conductorSimuladoId, servicioId, rutaAlDestino, Servicio.EstadoServicio.EN_CAMINO);
 
                             // 4. FINALIZAR
                             Thread.sleep(2000);
@@ -244,14 +252,17 @@ public class TransporteControlador {
                         }
 
                     } catch (Exception e) {
-                        System.err.println("❌ Error en la simulación de aceptación: " + e.getMessage());
+                        System.err.println("❌ Error en simulación: " + e.getMessage());
                     }
                 }).start();
             }
             return ResponseEntity.ok(Map.of("id", servicioId, "message", "Solicitud creada con éxito."));
         } catch (Exception e) {
             e.printStackTrace(); // Esto mostrará el error completo en la consola de Java
-            return ResponseEntity.status(400).body("Error al crear la solicitud: " + e.getMessage());
+            java.util.Map<String, Object> err = new java.util.HashMap<>();
+            err.put("error", "Error al crear solicitud");
+            err.put("details", e.getMessage());
+            return ResponseEntity.status(400).body(err);
         }
     }
 
@@ -311,7 +322,10 @@ public class TransporteControlador {
                     Servicio.EstadoServicio.PENDIENTE.name());
             return ResponseEntity.ok(solicitudes);
         } catch (Exception e) {
-            return ResponseEntity.status(500).body("Error al obtener solicitudes pendientes: " + e.getMessage());
+            java.util.Map<String, Object> error = new java.util.HashMap<>();
+            error.put("error", "Error al obtener solicitudes pendientes");
+            error.put("details", e.getMessage());
+            return ResponseEntity.status(500).body(error);
         }
     }
 
@@ -321,24 +335,70 @@ public class TransporteControlador {
     @GetMapping("/servicio/{servicioId}")
     public ResponseEntity<?> getEstadoServicio(@PathVariable("servicioId") Long servicioId) {
         try {
-            List<Map<String, Object>> servicio = db.queryForList("""
+            // ✅ Primero consultar el servicio sin JOINs para evitar errores
+            // cuando conductor_id recién fue asignado y los JOINs aún son inestables
+            String sqlBase = """
                         SELECT
-                            s.id, s.estado, s.conductor_id, c.nombre as conductor_nombre, u.nombre as usuario_nombre,
-                            c.foto as conductor_foto, c.latitud, c.longitud, s.origen_lat, s.origen_lng,
-                            s.destino_lat, s.destino_lng, s.distancia_km, s.tarifa,
-                            c.latitud as conductor_lat, c.longitud as conductor_lng
+                            s.id, s.estado, s.conductor_id,
+                            u.nombre as usuario_nombre,
+                            s.origen_lat, s.origen_lng, s.destino_lat, s.destino_lng,
+                            s.distancia_km, s.tarifa
                         FROM servicios s
-                        LEFT JOIN conductores c ON s.conductor_id = c.id
                         JOIN usuarios u ON s.usuario_id = u.id
                         WHERE s.id = ?
-                    """, servicioId);
+                    """;
+            List<Map<String, Object>> servicios = db.queryForList(sqlBase, servicioId);
 
-            if (servicio.isEmpty()) {
-                return ResponseEntity.notFound().build();
+            if (servicios.isEmpty()) {
+                return ResponseEntity.status(404).body(Map.of("error", "Servicio no encontrado"));
             }
-            return ResponseEntity.ok(servicio.get(0));
+
+            // Trabajamos con un HashMap mutable para poder añadir campos
+            java.util.Map<String, Object> servicio = new java.util.HashMap<>(servicios.get(0));
+
+            // ✅ Si hay conductor asignado, hacer el JOIN por separado con try/catch
+            Object conductorIdObj = servicio.get("conductor_id");
+            if (conductorIdObj != null) {
+                try {
+                    Long conductorId = Long.parseLong(conductorIdObj.toString());
+                    String sqlConductor = """
+                                SELECT
+                                    c.latitud as conductor_lat,
+                                    c.longitud as conductor_lng,
+                                    uc.nombre as conductor_nombre,
+                                    uc.foto as conductor_foto
+                                FROM conductores c
+                                JOIN usuarios uc ON c.usuario_id = uc.id
+                                WHERE c.id = ?
+                            """;
+                    List<Map<String, Object>> conductorData = db.queryForList(sqlConductor, conductorId);
+                    if (!conductorData.isEmpty()) {
+                        servicio.putAll(conductorData.get(0));
+                    }
+                } catch (Exception ex) {
+                    // ✅ Si falla el JOIN del conductor, no explotar — devolver el servicio sin datos del conductor
+                    System.err.println("⚠️ No se pudo obtener datos del conductor: " + ex.getMessage());
+                    servicio.put("conductor_lat", null);
+                    servicio.put("conductor_lng", null);
+                    servicio.put("conductor_nombre", "En camino...");
+                    servicio.put("conductor_foto", null);
+                }
+            } else {
+                // Sin conductor aún
+                servicio.put("conductor_lat", null);
+                servicio.put("conductor_lng", null);
+                servicio.put("conductor_nombre", null);
+                servicio.put("conductor_foto", null);
+            }
+
+            return ResponseEntity.ok(servicio);
+
         } catch (Exception e) {
-            return ResponseEntity.status(500).body("Error al consultar estado del servicio: " + e.getMessage());
+            e.printStackTrace();
+            java.util.Map<String, Object> error = new java.util.HashMap<>();
+            error.put("error", "Error al consultar estado del servicio");
+            error.put("details", e.getMessage());
+            return ResponseEntity.status(500).body(error);
         }
     }
 
@@ -351,11 +411,20 @@ public class TransporteControlador {
     public ResponseEntity<?> responderSolicitud(@PathVariable("servicioId") Long servicioId,
             @RequestBody Map<String, Object> body) {
         try {
-            String estado = body.get("estado").toString();
+            String estadoInput = body.get("estado").toString();
             Long conductorId = body.containsKey("conductor_id") ? Long.parseLong(body.get("conductor_id").toString())
                     : null;
 
-            if (estado.equals(Servicio.EstadoServicio.ACEPTADO.name())) {
+            // ✅ Sincronización con Enum: Validación centralizada
+            Servicio.EstadoServicio nuevoEstado;
+            try {
+                nuevoEstado = Servicio.EstadoServicio.valueOf(estadoInput);
+            } catch (IllegalArgumentException e) {
+                return ResponseEntity.status(400).body(Map.of("error", "Estado de servicio no válido: " + estadoInput));
+            }
+
+            switch (nuevoEstado) {
+                case ACEPTADO:
                 // Intentar aceptar el servicio, solo si está PENDIENTE
                 int updatedRows = db.update(
                         "UPDATE servicios SET estado = ?, conductor_id = ? WHERE id = ? AND estado = ?",
@@ -363,13 +432,10 @@ public class TransporteControlador {
                         Servicio.EstadoServicio.PENDIENTE.name());
 
                 if (updatedRows > 0) {
-                    // Si se aceptó, marcar todas las otras notificaciones para este servicio como
-                    // RECHAZADAS_POR_OTRO
                     db.update(
                             "UPDATE notificaciones_conductor SET estado_notificacion = ?, fecha_respuesta = NOW() WHERE servicio_id = ? AND conductor_id != ?",
                             NotificacionConductor.EstadoNotificacion.RECHAZADA_POR_OTRO.name(), servicioId,
                             conductorId);
-                    // Marcar la notificación de este conductor como ACEPTADA
                     db.update(
                             "UPDATE notificaciones_conductor SET estado_notificacion = ?, fecha_respuesta = NOW() WHERE servicio_id = ? AND conductor_id = ?",
                             NotificacionConductor.EstadoNotificacion.ACEPTADA.name(), servicioId, conductorId);
@@ -377,7 +443,6 @@ public class TransporteControlador {
                     // INICIAR SIMULACIÓN DE RECORRIDO POST-ACEPTACIÓN
                     new Thread(() -> {
                         try {
-                            // 1. Obtener datos del servicio y ubicación del conductor
                             Map<String, Object> s = db.queryForMap(
                                     "SELECT origen_lat, origen_lng, destino_lat, destino_lng FROM servicios WHERE id = ?",
                                     servicioId);
@@ -391,17 +456,22 @@ public class TransporteControlador {
                             double cLat = (double) c.get("latitud");
                             double cLng = (double) c.get("longitud");
 
-                            // Mantenerse en ACEPTADO mientras va al origen
-                            System.out.println("🚀 Conductor #" + conductorId + " aceptó y va al origen.");
+                            // 1. EN_CAMINO_AL_USUARIO: Ruta hacia el punto de recogida
+                            db.update("UPDATE servicios SET estado = ? WHERE id = ?", Servicio.EstadoServicio.EN_CAMINO_AL_USUARIO.name(), servicioId);
+                            System.out.println("🛵 Conductor #" + conductorId + " en camino al usuario.");
                             List<double[]> rutaAlOrigen = obtenerRutaOSRM(cLat, cLng, oLat, oLng);
-                            simularRecorridoConEstado(conductorId, servicioId, rutaAlOrigen, "ACEPTADO");
+                            simularRecorridoConEstado(conductorId, servicioId, rutaAlOrigen, Servicio.EstadoServicio.EN_CAMINO_AL_USUARIO);
 
-                            // ESTADO: EN_CAMINO (Inicia viaje al destino)
-                            db.update("UPDATE servicios SET estado = 'EN_CAMINO' WHERE id = ?", servicioId);
-                            System.out.println("🛣️ Viaje #" + servicioId + " iniciado hacia el destino.");
+                            // 2. LLEGO_AL_ORIGEN: El conductor está afuera
+                            db.update("UPDATE servicios SET estado = ? WHERE id = ?", Servicio.EstadoServicio.LLEGO_AL_ORIGEN.name(), servicioId);
+                            System.out.println("📍 Conductor llegó al punto de recogida.");
+                            Thread.sleep(5000); // Espera 5 segundos para que el usuario suba
 
+                            // 3. EN_VIAJE: Trayecto al destino final
+                            db.update("UPDATE servicios SET estado = ? WHERE id = ?", Servicio.EstadoServicio.EN_VIAJE.name(), servicioId);
+                            System.out.println("🛣️ Viaje #" + servicioId + " en curso al destino.");
                             List<double[]> rutaAlDestino = obtenerRutaOSRM(oLat, oLng, dLat, dLng);
-                            simularRecorridoConEstado(conductorId, servicioId, rutaAlDestino, "EN_CAMINO");
+                            simularRecorridoConEstado(conductorId, servicioId, rutaAlDestino, Servicio.EstadoServicio.EN_VIAJE);
 
                             // ESTADO: FINALIZADO
                             db.update("UPDATE servicios SET estado = ?, fecha_fin = NOW() WHERE id = ?",
@@ -416,9 +486,6 @@ public class TransporteControlador {
                     return ResponseEntity
                             .ok(Map.of("message", "Servicio aceptado con éxito.", "servicioId", servicioId));
                 } else {
-                    // El servicio ya no está PENDIENTE (fue aceptado por otro o cancelado).
-                    // Actualizamos la notificación de este conductor a RECHAZADA_POR_OTRO si
-                    // intentó aceptar un servicio ya tomado.
                     db.update(
                             "UPDATE notificaciones_conductor SET estado_notificacion = ?, fecha_respuesta = NOW() WHERE servicio_id = ? AND conductor_id = ?",
                             NotificacionConductor.EstadoNotificacion.RECHAZADA_POR_OTRO.name(), servicioId,
@@ -426,41 +493,47 @@ public class TransporteControlador {
                     return ResponseEntity.status(409).body(
                             Map.of("message", "El servicio ya no está disponible o fue aceptado por otro conductor."));
                 }
-            } else if (estado.equals(Servicio.EstadoServicio.RECHAZADO.name())) {
+
+                case RECHAZADO:
                 // Marcar la notificación de este conductor como RECHAZADA
                 db.update(
                         "UPDATE notificaciones_conductor SET estado_notificacion = ?, fecha_respuesta = NOW() WHERE servicio_id = ? AND conductor_id = ?",
                         NotificacionConductor.EstadoNotificacion.RECHAZADA.name(), servicioId, conductorId);
-                // TODO: Lógica para buscar otro conductor o marcar el servicio como
-                // "SIN_CONDUCTORES" si todos rechazan
                 return ResponseEntity.ok(Map.of("message", "Servicio rechazado."));
-            } else if (estado.equals(Servicio.EstadoServicio.FINALIZADO.name())) {
-                // Lógica para finalizar el servicio (solo el conductor asignado puede hacerlo)
+
+                case FINALIZADO:
                 if (conductorId == null) {
-                    return ResponseEntity.status(400)
-                            .body("Error: conductor_id es requerido para finalizar un servicio.");
+                    return ResponseEntity.status(400).body("Error: conductor_id es requerido.");
                 }
                 db.update("UPDATE servicios SET estado = ?, fecha_fin = NOW() WHERE id = ? AND conductor_id = ?",
                         Servicio.EstadoServicio.FINALIZADO.name(), servicioId, conductorId);
-                // TODO: Actualizar ganancias del conductor, etc.
                 return ResponseEntity.ok(Map.of("message", "Servicio finalizado."));
-            } else if (estado.equals(Servicio.EstadoServicio.CANCELADO.name())) {
-                // Lógica para cancelar el servicio (puede ser el usuario o el conductor)
+
+                case CANCELADO:
                 db.update("UPDATE servicios SET estado = ? WHERE id = ?",
-                        Servicio.EstadoServicio.CANCELADO.name(), servicioId); // No se requiere conductor_id aquí, ya
-                                                                               // que el usuario también puede cancelar
-                // TODO: Manejar penalizaciones, etc.
-                // Si el servicio fue cancelado, todas las notificaciones pendientes a
-                // conductores deben ser marcadas como CANCELADAS_POR_USUARIO
+                        Servicio.EstadoServicio.CANCELADO.name(), servicioId);
                 db.update(
                         "UPDATE notificaciones_conductor SET estado_notificacion = ?, fecha_respuesta = NOW() WHERE servicio_id = ? AND estado_notificacion = ?",
                         NotificacionConductor.EstadoNotificacion.RECHAZADA_POR_OTRO.name(), servicioId,
                         NotificacionConductor.EstadoNotificacion.ENVIADA.name());
                 return ResponseEntity.ok(Map.of("message", "Servicio cancelado."));
+
+                case EN_CAMINO:
+                case EN_CAMINO_AL_USUARIO:
+                case LLEGO_AL_ORIGEN:
+                case EN_VIAJE:
+                    // ✅ Manejo agrupado de estados intermedios
+                    db.update("UPDATE servicios SET estado = ? WHERE id = ?", nuevoEstado.name(), servicioId);
+                    return ResponseEntity.ok(Map.of("message", "Estado actualizado a " + nuevoEstado));
+
+                default:
+                    return ResponseEntity.status(400).body("Estado no permitido en esta operación.");
             }
-            return ResponseEntity.status(400).body("Estado de servicio no válido.");
         } catch (Exception e) {
-            return ResponseEntity.status(400).body("Error al responder la solicitud: " + e.getMessage());
+            java.util.Map<String, Object> err = new java.util.HashMap<>();
+            err.put("error", "Error al responder solicitud");
+            err.put("details", e.getMessage());
+            return ResponseEntity.status(400).body(err);
         }
     }
 
@@ -513,5 +586,26 @@ public class TransporteControlador {
         // Asegurar llegada al punto final exacto
         double[] last = ruta.get(totalPuntos - 1);
         db.update("UPDATE conductores SET latitud = ?, longitud = ? WHERE id = ?", last[0], last[1], conductorId);
+    }
+
+    /**
+     * Simulación que actualiza tanto la posición como el estado del servicio en cada paso.
+     */
+    private void simularRecorridoConEstado(Long conductorId, Long servicioId, List<double[]> ruta, Servicio.EstadoServicio estado) throws InterruptedException {
+        if (ruta == null || ruta.isEmpty()) return;
+        
+        int totalPuntos = ruta.size();
+        int salto = Math.max(1, totalPuntos / 10);
+
+        for (int i = 0; i < totalPuntos; i += salto) {
+            double[] p = ruta.get(i);
+            db.update("UPDATE conductores SET latitud = ?, longitud = ? WHERE id = ?", p[0], p[1], conductorId);
+            db.update("UPDATE servicios SET estado = ? WHERE id = ?", estado.name(), servicioId);
+            Thread.sleep(3000); 
+        }
+
+        double[] last = ruta.get(totalPuntos - 1);
+        db.update("UPDATE conductores SET latitud = ?, longitud = ? WHERE id = ?", last[0], last[1], conductorId);
+        db.update("UPDATE servicios SET estado = ? WHERE id = ?", estado.name(), servicioId);
     }
 }
