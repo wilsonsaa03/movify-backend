@@ -121,10 +121,12 @@ public class TransporteControlador {
             Double distanciaKm = Double.parseDouble(solicitud.get("distancia_km").toString());
             Double tarifa = recalcularTarifaSeguridad(distanciaKm);
             String tipo = solicitud.getOrDefault("tipo", "TRANSPORTE").toString();
+            String descripcion = solicitud.getOrDefault("descripcion", "").toString();
+
             // Insertar en la tabla de servicios
-            String sql = "INSERT INTO servicios (usuario_id, origen_lat, origen_lng, destino_lat, destino_lng, distancia_km, tarifa, estado, tipo, fecha_solicitud) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW()) RETURNING id";
+            String sql = "INSERT INTO servicios (usuario_id, origen_lat, origen_lng, destino_lat, destino_lng, distancia_km, tarifa, estado, tipo, descripcion, fecha_solicitud) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW()) RETURNING id";
             Long servicioId = db.queryForObject(sql, Long.class, usuarioId, origenLat, origenLng, destinoLat,
-                    destinoLng, distanciaKm, tarifa, Servicio.EstadoServicio.PENDIENTE.name(), tipo);
+                    destinoLng, distanciaKm, tarifa, Servicio.EstadoServicio.PENDIENTE.name(), tipo, descripcion);
 
             // --- Lógica para buscar y notificar conductores cercanos ---
             // 1. Buscar conductores activos cercanos al origen del servicio
@@ -300,6 +302,24 @@ public class TransporteControlador {
     @GetMapping("/solicitudes-pendientes/{conductorId}")
     public ResponseEntity<?> getSolicitudesPendientes(@PathVariable("conductorId") Long conductorId) {
         try {
+            // ✅ Validar tasa de cancelación antes de buscar solicitudes
+            String sqlTasa = """
+                SELECT COALESCE(
+                    (COUNT(CASE WHEN estado = 'CANCELADO' THEN 1 END) * 100.0 / NULLIF(COUNT(*), 0)), 
+                0) as tasa
+                FROM servicios 
+                WHERE conductor_id = ? AND (estado = 'FINALIZADO' OR estado = 'CANCELADO')
+            """;
+            Double tasa = db.queryForObject(sqlTasa, Double.class, conductorId);
+
+            if (tasa != null && tasa > 20.0) {
+                return ResponseEntity.status(403).body(Map.of(
+                    "error", "Sanción por alta cancelación",
+                    "tasaActual", tasa,
+                    "message", "Tu tasa de cancelación supera el 20%. No recibirás solicitudes temporalmente."
+                ));
+            }
+
             // Buscar notificaciones ENVIADAS para este conductor que aún no han sido
             // respondidas
             // y que el servicio asociado sigue PENDIENTE.
@@ -339,7 +359,7 @@ public class TransporteControlador {
             // cuando conductor_id recién fue asignado y los JOINs aún son inestables
             String sqlBase = """
                         SELECT
-                            s.id, s.estado, s.conductor_id,
+                            s.id, s.estado, s.conductor_id, s.tipo, s.descripcion,
                             u.nombre as usuario_nombre,
                             s.origen_lat, s.origen_lng, s.destino_lat, s.destino_lng,
                             s.distancia_km, s.tarifa
@@ -366,7 +386,8 @@ public class TransporteControlador {
                                     c.latitud as conductor_lat,
                                     c.longitud as conductor_lng,
                                     uc.nombre as conductor_nombre,
-                                    uc.foto as conductor_foto
+                                    uc.foto as conductor_foto,
+                                    uc.telefono as conductor_telefono
                                 FROM conductores c
                                 JOIN usuarios uc ON c.usuario_id = uc.id
                                 WHERE c.id = ?
@@ -510,8 +531,14 @@ public class TransporteControlador {
                 return ResponseEntity.ok(Map.of("message", "Servicio finalizado."));
 
                 case CANCELADO:
-                db.update("UPDATE servicios SET estado = ? WHERE id = ?",
-                        Servicio.EstadoServicio.CANCELADO.name(), servicioId);
+                if (conductorId != null) {
+                    // ✅ Si el conductor cancela, guardamos su ID para el historial de penalizaciones
+                    db.update("UPDATE servicios SET estado = ?, conductor_id = ? WHERE id = ?",
+                            Servicio.EstadoServicio.CANCELADO.name(), conductorId, servicioId);
+                } else {
+                    db.update("UPDATE servicios SET estado = ? WHERE id = ?",
+                            Servicio.EstadoServicio.CANCELADO.name(), servicioId);
+                }
                 db.update(
                         "UPDATE notificaciones_conductor SET estado_notificacion = ?, fecha_respuesta = NOW() WHERE servicio_id = ? AND estado_notificacion = ?",
                         NotificacionConductor.EstadoNotificacion.RECHAZADA_POR_OTRO.name(), servicioId,
@@ -521,6 +548,7 @@ public class TransporteControlador {
                 case EN_CAMINO:
                 case EN_CAMINO_AL_USUARIO:
                 case LLEGO_AL_ORIGEN:
+                case PAQUETE_RECOGIDO: // ✅ Nuevo estado aceptado
                 case EN_VIAJE:
                     // ✅ Manejo agrupado de estados intermedios
                     db.update("UPDATE servicios SET estado = ? WHERE id = ?", nuevoEstado.name(), servicioId);

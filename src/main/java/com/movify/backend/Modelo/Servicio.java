@@ -28,6 +28,11 @@ public class Servicio {
         PENDIENTE,
         ACEPTADO,
         RECHAZADO,
+        EN_CAMINO_AL_USUARIO,
+        LLEGO_AL_ORIGEN,
+        PAQUETE_RECOGIDO,
+        EN_CAMINO,
+        EN_VIAJE,
         FINALIZADO,
         CANCELADO
     }
@@ -43,6 +48,8 @@ public class Servicio {
     private Double destinoLng;
     private Double distanciaKm;
     private Double tarifa;
+    private String tipo;
+    private String descripcion;
 
     @Builder.Default
     @Enumerated(EnumType.STRING) // Esto asegura que en la DB se guarde "PENDIENTE" y no 0
