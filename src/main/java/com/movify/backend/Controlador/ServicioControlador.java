@@ -10,7 +10,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/servicios")
-@CrossOrigin("*")
+@CrossOrigin(origins = "${app.cors.allowed-origins}")
 public class ServicioControlador {
 
     @Autowired
