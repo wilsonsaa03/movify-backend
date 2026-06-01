@@ -7,7 +7,7 @@ import com.movify.backend.Modelo.Conductor;
 import com.movify.backend.Modelo.Usuario;
 
 import org.springframework.beans.factory.annotation.Autowired;
-
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.http.ResponseEntity;
 
 import org.springframework.web.bind.annotation.*;
@@ -29,38 +29,41 @@ public class ConductorControlador {
         @Autowired
         private UsuarioRepositorio usuarioRepositorio;
 
+        @Autowired
+        private JdbcTemplate db;
+
         // ==========================================
         // NUEVO: ACTUALIZAR UBICACIÓN Y ESTADO
         // ==========================================
 
         @PutMapping("/{correo}/ubicacion")
         public ResponseEntity<?> actualizarUbicacion(
-                @PathVariable String correo, 
-                @RequestBody Map<String, Object> datos) {
-            
-            try {
-                Usuario usuario = usuarioRepositorio.findByCorreo(correo)
-                        .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
+                        @PathVariable String correo,
+                        @RequestBody Map<String, Object> datos) {
 
-                Conductor conductor = conductorRepositorio.findByUsuarioId(usuario.getId())
-                        .orElseThrow(() -> new RuntimeException("Conductor no encontrado"));
+                try {
+                        Usuario usuario = usuarioRepositorio.findByCorreo(correo)
+                                        .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
 
-                if (datos.get("lat") != null) {
-                    conductor.setLatitud(((Number) datos.get("lat")).doubleValue());
+                        Conductor conductor = conductorRepositorio.findByUsuarioId(usuario.getId())
+                                        .orElseThrow(() -> new RuntimeException("Conductor no encontrado"));
+
+                        if (datos.get("lat") != null) {
+                                conductor.setLatitud(((Number) datos.get("lat")).doubleValue());
+                        }
+                        if (datos.get("lon") != null) {
+                                conductor.setLongitud(((Number) datos.get("lon")).doubleValue());
+                        }
+                        if (datos.get("activo") != null) {
+                                conductor.setEnLinea((Boolean) datos.get("activo"));
+                        }
+
+                        conductorRepositorio.save(conductor);
+                        return ResponseEntity.ok().build();
+
+                } catch (Exception e) {
+                        return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
                 }
-                if (datos.get("lon") != null) {
-                    conductor.setLongitud(((Number) datos.get("lon")).doubleValue());
-                }
-                if (datos.get("activo") != null) {
-                    conductor.setEnLinea((Boolean) datos.get("activo"));
-                }
-
-                conductorRepositorio.save(conductor);
-                return ResponseEntity.ok().build();
-
-            } catch (Exception e) {
-                return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
-            }
         }
 
         // =========================
@@ -188,8 +191,8 @@ public class ConductorControlador {
                         return ResponseEntity
                                         .badRequest()
                                         .body(Map.of(
-                                                                "error",
-                                                                "Error: " + e.getMessage()));
+                                                        "error",
+                                                        "Error: " + e.getMessage()));
                 }
         }
 
@@ -390,8 +393,8 @@ public class ConductorControlador {
                         return ResponseEntity
                                         .badRequest()
                                         .body(Map.of(
-                                                                "error",
-                                                                e.getMessage()));
+                                                        "error",
+                                                        e.getMessage()));
                 }
         }
 }

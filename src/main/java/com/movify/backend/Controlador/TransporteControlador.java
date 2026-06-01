@@ -251,6 +251,14 @@ public class TransporteControlador {
                             db.update("UPDATE servicios SET estado = ?, fecha_fin = NOW() WHERE id = ?",
                                     Servicio.EstadoServicio.FINALIZADO.name(), servicioId);
 
+                            // ✅ Actualizar estadísticas del conductor simulado
+                            db.update("""
+                                        UPDATE conductores
+                                        SET viajes_hoy = viajes_hoy + 1, viajes_total = viajes_total + 1,
+                                            ganancias_hoy = ganancias_hoy + (SELECT tarifa FROM servicios WHERE id = ?)
+                                        WHERE id = ?
+                                    """, servicioId, conductorSimuladoId);
+
                             System.out.println("🤖 SIMULACIÓN COMPLETADA: Viaje #" + servicioId + " finalizado.");
                         } else {
                             System.out.println("✅ El viaje #" + servicioId
@@ -512,6 +520,17 @@ public class TransporteControlador {
                                 // ESTADO: FINALIZADO
                                 db.update("UPDATE servicios SET estado = ?, fecha_fin = NOW() WHERE id = ?",
                                         Servicio.EstadoServicio.FINALIZADO.name(), servicioId);
+
+                                // ✅ Actualizar estadísticas del conductor real
+                                db.update(
+                                        """
+                                                    UPDATE conductores
+                                                    SET viajes_hoy = viajes_hoy + 1, viajes_total = viajes_total + 1,
+                                                        ganancias_hoy = ganancias_hoy + (SELECT tarifa FROM servicios WHERE id = ?)
+                                                    WHERE id = ?
+                                                """,
+                                        servicioId, conductorId);
+
                                 System.out.println("🏁 Viaje #" + servicioId + " finalizado con éxito.");
 
                             } catch (Exception e) {
@@ -544,6 +563,13 @@ public class TransporteControlador {
                     }
                     db.update("UPDATE servicios SET estado = ?, fecha_fin = NOW() WHERE id = ? AND conductor_id = ?",
                             Servicio.EstadoServicio.FINALIZADO.name(), servicioId, conductorId);
+
+                    // ✅ Asegurar actualización de estadísticas en cierre manual
+                    db.update("""
+                                UPDATE conductores SET viajes_hoy = viajes_hoy + 1, viajes_total = viajes_total + 1,
+                                ganancias_hoy = ganancias_hoy + (SELECT tarifa FROM servicios WHERE id = ?) WHERE id = ?
+                            """, servicioId, conductorId);
+
                     return ResponseEntity.ok(Map.of("message", "Servicio finalizado."));
 
                 case CANCELADO:
@@ -655,5 +681,25 @@ public class TransporteControlador {
         double[] last = ruta.get(totalPuntos - 1);
         db.update("UPDATE conductores SET latitud = ?, longitud = ? WHERE id = ?", last[0], last[1], conductorId);
         db.update("UPDATE servicios SET estado = ? WHERE id = ?", estado.name(), servicioId);
+    }
+
+    /**
+     * USUARIO: Califica un servicio finalizado.
+     */
+    @PostMapping("/calificar")
+    public ResponseEntity<?> calificarServicio(@RequestBody Map<String, Object> body) {
+        try {
+            Long servicioId = Long.parseLong(body.get("servicio_id").toString());
+            Long usuarioId = Long.parseLong(body.get("usuario_id").toString());
+            Integer puntuacion = Integer.parseInt(body.get("puntos").toString());
+            String comentario = body.getOrDefault("comentario", "").toString();
+
+            db.update("INSERT INTO calificaciones (servicio_id, usuario_id, calificacion, comentario, fecha) VALUES (?, ?, ?, ?, NOW())",
+                    servicioId, usuarioId, puntuacion, comentario);
+
+            return ResponseEntity.ok(Map.of("message", "Calificación guardada."));
+        } catch (Exception e) {
+            return ResponseEntity.status(400).body(Map.of("error", "Error al guardar calificación", "details", e.getMessage()));
+        }
     }
 }
