@@ -1,0 +1,77 @@
+name: Deploy Spring Boot Backend
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy Movify Backend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+
+        env:
+          GITHUB_PAT: ${{ secrets.GH_PAT }}
+
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+
+          envs: GITHUB_PAT
+
+          script: |
+            set -e
+
+            echo "========================================"
+            echo " Deploy Movify Backend"
+            echo "========================================"
+
+            PROJECT_PATH="/var/www/ds2/movify-api"
+
+            # Clonar repositorio si no existe
+            if [ ! -d "$PROJECT_PATH/.git" ]; then
+              git clone \
+              https://wilsonsaa03:$GITHUB_PAT@github.com/wilsonsaa03/movify-backend.git \
+              $PROJECT_PATH
+            fi
+
+            cd $PROJECT_PATH
+
+            # Configurar remote privado
+            git remote set-url origin \
+            https://wilsonsaa03:$GITHUB_PAT@github.com/wilsonsaa03/movify-backend.git
+
+            # Actualizar código
+            git fetch origin
+            git reset --hard origin/main
+
+            echo "========================================"
+            echo " Compilando proyecto"
+            echo "========================================"
+
+            mvn clean package -DskipTests
+
+            echo "========================================"
+            echo " Generando app.jar"
+            echo "========================================"
+
+            cp target/*.jar app.jar
+
+            echo "========================================"
+            echo " Reiniciando servicio"
+            echo "========================================"
+
+            sudo systemctl restart movify
+
+            echo "========================================"
+            echo " Deploy completado"
+            echo "========================================"
