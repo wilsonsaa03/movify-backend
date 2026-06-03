@@ -9,6 +9,7 @@ import com.movify.backend.Modelo.Usuario;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.annotation.Transactional;
 
 import org.springframework.web.bind.annotation.*;
 
@@ -205,21 +206,29 @@ public class ConductorControlador {
         @Transactional
         public ResponseEntity<?> actualizarPerfil(@RequestBody Map<String, Object> datos) {
             try {
-                String correo = datos.get("correo").toString();
-                String nombre = datos.get("nombre").toString();
-                String telefono = datos.get("telefono").toString();
-                String ciudad = datos.get("ciudad") != null ? datos.get("ciudad").toString() : "";
+                // 1. Extracción segura de datos para evitar NullPointerException
+                String correo = datos.get("correo") != null ? datos.get("correo").toString() : null;
+                String nombre = datos.get("nombre") != null ? datos.get("nombre").toString() : null;
+                String telefono = datos.get("telefono") != null ? datos.get("telefono").toString() : null;
 
-                // 1. Actualizar tabla Usuarios (nombre y teléfono)
-                db.update("UPDATE usuarios SET nombre = ?, telefono = ? WHERE correo = ?", 
-                          nombre, telefono, correo);
-                
-                // 2. Actualizar tabla Conductores (si tienes campo ciudad allí, o podrías tenerlo en usuarios)
-                // Por ahora asumimos que la actualización de usuario es lo primordial
-                
+                if (correo == null) {
+                    return ResponseEntity.badRequest().body(Map.of("error", "El correo es obligatorio"));
+                }
+
+                // 2. Buscar el usuario por correo
+                Usuario usuario = usuarioRepositorio.findByCorreo(correo)
+                        .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
+
+                // 3. Actualizar campos
+                if (nombre != null) usuario.setNombre(nombre);
+                if (telefono != null) usuario.setTelefono(telefono);
+
+                usuarioRepositorio.save(usuario);
+
                 return ResponseEntity.ok(Map.of("mensaje", "Perfil actualizado correctamente"));
 
             } catch (Exception e) {
+                e.printStackTrace(); // Esto te permitirá ver el error real en la consola de Java (IntelliJ/Eclipse)
                 return ResponseEntity.badRequest().body(Map.of("error", "Error al actualizar: " + e.getMessage()));
             }
         }
