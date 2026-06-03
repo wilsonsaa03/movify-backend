@@ -16,6 +16,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.ArrayList;
 
 @RestController
 @RequestMapping("/api/conductor")
@@ -197,6 +198,33 @@ public class ConductorControlador {
         }
 
         // =========================
+        // ACTUALIZAR PERFIL
+        // =========================
+
+        @PutMapping("/perfil/actualizar")
+        @Transactional
+        public ResponseEntity<?> actualizarPerfil(@RequestBody Map<String, Object> datos) {
+            try {
+                String correo = datos.get("correo").toString();
+                String nombre = datos.get("nombre").toString();
+                String telefono = datos.get("telefono").toString();
+                String ciudad = datos.get("ciudad") != null ? datos.get("ciudad").toString() : "";
+
+                // 1. Actualizar tabla Usuarios (nombre y teléfono)
+                db.update("UPDATE usuarios SET nombre = ?, telefono = ? WHERE correo = ?", 
+                          nombre, telefono, correo);
+                
+                // 2. Actualizar tabla Conductores (si tienes campo ciudad allí, o podrías tenerlo en usuarios)
+                // Por ahora asumimos que la actualización de usuario es lo primordial
+                
+                return ResponseEntity.ok(Map.of("mensaje", "Perfil actualizado correctamente"));
+
+            } catch (Exception e) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Error al actualizar: " + e.getMessage()));
+            }
+        }
+
+        // =========================
         // OBTENER PERFIL
         // =========================
 
@@ -275,6 +303,12 @@ public class ConductorControlador {
                                         "estado",
                                         conductor.getEstado());
 
+                        // Calificación real desde la DB
+                        Double calif = db.queryForObject(
+                                        "SELECT COALESCE(AVG(calificacion), 0) FROM calificaciones WHERE servicio_id IN (SELECT id FROM servicios WHERE conductor_id = ?)",
+                                        Double.class, conductor.getId());
+                        respuesta.put("calificacion", Math.round(calif * 10.0) / 10.0);
+
                         // =========================
                         // ESTADISTICAS
                         // =========================
@@ -298,91 +332,12 @@ public class ConductorControlador {
                         // =========================
                         // HISTORIAL
                         // =========================
-
-                        respuesta.put(
-                                        "historial",
-                                        new Object[] {
-
-                                                        Map.of(
-                                                                        "destino",
-                                                                        "Centro Comercial Chipichape",
-
-                                                                        "fecha",
-                                                                        "20 may, 9:30 AM",
-
-                                                                        "precio",
-                                                                        7800),
-
-                                                        Map.of(
-                                                                        "destino",
-                                                                        "Restaurante La Hacienda",
-
-                                                                        "fecha",
-                                                                        "20 may, 11:15 AM",
-
-                                                                        "precio",
-                                                                        5500),
-
-                                                        Map.of(
-                                                                        "destino",
-                                                                        "Clínica Valle del Lili",
-
-                                                                        "fecha",
-                                                                        "19 may, 3:20 PM",
-
-                                                                        "precio",
-                                                                        8200)
-
-                                        });
+                        respuesta.put("historial", new ArrayList<>());
 
                         // =========================
                         // SOLICITUDES
                         // =========================
-
-                        respuesta.put(
-                                        "solicitudes",
-                                        new Object[] {
-
-                                                        Map.of(
-                                                                        "id",
-                                                                        1,
-
-                                                                        "tipo",
-                                                                        "Transporte",
-
-                                                                        "destino",
-                                                                        "Centro Comercial Unicentro",
-
-                                                                        "precio",
-                                                                        8500),
-
-                                                        Map.of(
-                                                                        "id",
-                                                                        2,
-
-                                                                        "tipo",
-                                                                        "Domicilio",
-
-                                                                        "destino",
-                                                                        "Restaurante El Punto",
-
-                                                                        "precio",
-                                                                        6200),
-
-                                                        Map.of(
-                                                                        "id",
-                                                                        3,
-
-                                                                        "tipo",
-                                                                        "Encomienda",
-
-                                                                        "destino",
-                                                                        "Universidad del Valle",
-
-                                                                        "precio",
-                                                                        9000)
-
-                                        });
+                        respuesta.put("solicitudes", new ArrayList<>());
 
                         return ResponseEntity.ok(respuesta);
 

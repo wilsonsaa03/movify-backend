@@ -124,10 +124,33 @@ public class TransporteControlador {
             String tipo = solicitud.getOrDefault("tipo", "TRANSPORTE").toString();
             String descripcion = solicitud.getOrDefault("descripcion", "").toString();
 
-            // Insertar en la tabla de servicios
-            String sql = "INSERT INTO servicios (usuario_id, origen_lat, origen_lng, destino_lat, destino_lng, distancia_km, tarifa, estado, tipo, descripcion, fecha_solicitud) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW()) RETURNING id";
-            Long servicioId = db.queryForObject(sql, Long.class, usuarioId, origenLat, origenLng, destinoLat,
-                    destinoLng, distanciaKm, tarifa, Servicio.EstadoServicio.PENDIENTE.name(), tipo, descripcion);
+            // Extraer campos adicionales con valores por defecto si no vienen
+            String nombreRemitente    = solicitud.getOrDefault("nombre_remitente", "").toString();
+            String telefonoRemitente  = solicitud.getOrDefault("telefono_remitente", "").toString();
+            String nombreDestinatario = solicitud.getOrDefault("nombre_destinatario", "").toString();
+            String telefonoDestinatario = solicitud.getOrDefault("telefono_destinatario", "").toString();
+            String tipoPaquete        = solicitud.getOrDefault("tipo_paquete", "").toString();
+            String pesoKg             = solicitud.getOrDefault("peso_kg", "").toString();
+            String metodoPago         = solicitud.getOrDefault("metodo_pago", "efectivo").toString();
+
+            String sql = """
+                INSERT INTO servicios (
+                    usuario_id, origen_lat, origen_lng, destino_lat, destino_lng,
+                    distancia_km, tarifa, estado, tipo, descripcion, fecha_solicitud,
+                    nombre_remitente, telefono_remitente,
+                    nombre_destinatario, telefono_destinatario,
+                    tipo_paquete, peso_kg, metodo_pago
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
+                """;
+
+            Long servicioId = db.queryForObject(sql, Long.class,
+                usuarioId, origenLat, origenLng, destinoLat, destinoLng,
+                distanciaKm, tarifa, Servicio.EstadoServicio.PENDIENTE.name(), tipo, descripcion,
+                nombreRemitente, telefonoRemitente,
+                nombreDestinatario, telefonoDestinatario,
+                tipoPaquete, pesoKg, metodoPago
+            );
 
             // --- Lógica para buscar y notificar conductores cercanos ---
             // 1. Buscar conductores activos cercanos al origen del servicio
