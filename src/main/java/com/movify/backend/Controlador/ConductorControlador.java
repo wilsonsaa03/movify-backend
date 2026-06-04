@@ -242,14 +242,15 @@ public class ConductorControlador {
                                                 .body(Map.of("error", "Perfil de conductor no encontrado."));
                         }
 
-                        // 5. Actualizar Ciudad en la tabla conductores
-                        try {
-                                db.update("UPDATE conductores SET ciudad = ? WHERE id = ?", ciudad, conductor.getId());
-                        } catch (Exception ex) {
-                                // Si la columna no existe o falla, solo lo logueamos en consola
-                                // pero permitimos que el resto del perfil se actualice.
-                                System.err.println("⚠️ No se pudo actualizar 'ciudad'. ¿Existe la columna en DB? "
-                                                + ex.getMessage());
+                        // 5. Actualizar Ciudad (con manejo de errores robusto)
+                        if (conductor != null) {
+                                try {
+                                        db.update("UPDATE conductores SET ciudad = ? WHERE id = ?", ciudad,
+                                                        conductor.getId());
+                                } catch (Exception ex) {
+                                        System.err.println("⚠️ SQL Error al actualizar ciudad: " + ex.getMessage());
+                                        // No lanzamos excepción para permitir que los datos de 'Usuario' sí se guarden
+                                }
                         }
 
                         return ResponseEntity.ok(Map.of("mensaje", "Perfil actualizado correctamente"));
