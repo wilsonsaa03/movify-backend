@@ -207,12 +207,16 @@ public class ConductorControlador {
         public ResponseEntity<?> actualizarPerfil(@RequestBody Map<String, Object> datos) {
                 try {
                         // 1. Extracción segura de datos para evitar NullPointerException
-                        String correo = datos.get("correo") != null ? datos.get("correo").toString() : null;
-                        String nombre = datos.get("nombre") != null ? datos.get("nombre").toString() : null;
-                        String telefono = datos.get("telefono") != null ? datos.get("telefono").toString() : null;
-                        String ciudad = datos.get("ciudad") != null ? datos.get("ciudad").toString() : "Buenaventura";
+                        String correo = (datos.get("correo") != null) ? datos.get("correo").toString() : null;
+                        String nombre = (datos.get("nombre") != null) ? datos.get("nombre").toString() : null;
+                        String telefono = (datos.get("telefono") != null) ? datos.get("telefono").toString() : null;
+                        String ciudad = (datos.get("ciudad") != null
+                                        && !datos.get("ciudad").toString().trim().isEmpty())
+                                                        ? datos.get("ciudad").toString()
+                                                        : "Buenaventura";
+                        String foto = (datos.get("foto") != null) ? datos.get("foto").toString() : null;
 
-                        if (correo == null) {
+                        if (correo == null || correo.trim().isEmpty()) {
                                 return ResponseEntity.badRequest().body(Map.of("error", "El correo es obligatorio"));
                         }
 
@@ -225,19 +229,36 @@ public class ConductorControlador {
                                 usuario.setNombre(nombre);
                         if (telefono != null)
                                 usuario.setTelefono(telefono);
+                        if (foto != null)
+                                usuario.setFoto(foto);
 
                         usuarioRepositorio.save(usuario);
 
-                        // 4. Actualizar Ciudad en la tabla conductores
-                        db.update("UPDATE conductores SET ciudad = ? WHERE usuario_id = ?", ciudad, usuario.getId());
+                        // 4. Buscar el conductor para obtener su ID real
+                        Conductor conductor = conductorRepositorio.findByUsuarioId(usuario.getId()).orElse(null);
+
+                        if (conductor == null) {
+                                return ResponseEntity.status(404)
+                                                .body(Map.of("error", "Perfil de conductor no encontrado."));
+                        }
+
+                        // 5. Actualizar Ciudad en la tabla conductores
+                        try {
+                                db.update("UPDATE conductores SET ciudad = ? WHERE id = ?", ciudad, conductor.getId());
+                        } catch (Exception ex) {
+                                // Si la columna no existe o falla, solo lo logueamos en consola
+                                // pero permitimos que el resto del perfil se actualice.
+                                System.err.println("⚠️ No se pudo actualizar 'ciudad'. ¿Existe la columna en DB? "
+                                                + ex.getMessage());
+                        }
 
                         return ResponseEntity.ok(Map.of("mensaje", "Perfil actualizado correctamente"));
 
                 } catch (Exception e) {
-                        e.printStackTrace(); // Esto te permitirá ver el error real en la consola de Java
-                                             // (IntelliJ/Eclipse)
-                        return ResponseEntity.badRequest()
-                                        .body(Map.of("error", "Error al actualizar: " + e.getMessage()));
+                        e.printStackTrace();
+                        String details = (e.getMessage() != null) ? e.getMessage() : e.toString();
+                        return ResponseEntity.status(500)
+                                        .body(Map.of("error", "Error al actualizar perfil", "details", details));
                 }
         }
 
@@ -245,20 +266,18 @@ public class ConductorControlador {
         // OBTENER PERFIL
         // =========================
 
-        @GetMapping("/perfil/{correo}")
+        @GetMapping("/perfil/{correo:.+}")
         public ResponseEntity<?> obtenerPerfil(
-                        @PathVariable String correo) {
+                        @PathVariable(value = "correo") String correo) {
 
                 try {
-
                         Usuario usuario = usuarioRepositorio
                                         .findByCorreo(correo)
                                         .orElse(null);
 
                         if (usuario == null) {
-
                                 return ResponseEntity
-                                                .badRequest()
+                                                .status(404)
                                                 .body(Map.of(
                                                                 "error",
                                                                 "Usuario no encontrado"));
@@ -269,23 +288,27 @@ public class ConductorControlador {
                                         .orElse(null);
 
                         if (conductor == null) {
-
                                 return ResponseEntity
-                                                .badRequest()
+                                                .status(404)
                                                 .body(Map.of(
                                                                 "error",
-                                                                "Conductor no encontrado"));
+                                                                "Perfil de conductor no encontrado para este usuario"));
                         }
 
                         Map<String, Object> respuesta = new HashMap<>();
 
                         respuesta.put("conductor_id", conductor.getId());
 
-                        // Ciudad con valor por defecto
-                        String ciudad = db.queryForObject(
-                                        "SELECT COALESCE(ciudad, 'Buenaventura') FROM conductores WHERE id = ?",
-                                        String.class, conductor.getId());
-                        respuesta.put("ciudad", ciudad);
+                        // Obtener Ciudad con manejo de error si la columna no existe
+                        String ciudadDefault = "Buenaventura";
+                        try {
+                                String ciudadDb = db.queryForObject(
+                                                "SELECT COALESCE(ciudad, 'Buenaventura') FROM conductores WHERE id = ?",
+                                                String.class, conductor.getId());
+                                respuesta.put("ciudad", ciudadDb);
+                        } catch (Exception ex) {
+                                respuesta.put("ciudad", ciudadDefault);
+                        }
 
                         // =========================
                         // DATOS PERSONALES
@@ -337,21 +360,24 @@ public class ConductorControlador {
                         // ESTADISTICAS
                         // =========================
 
-                        respuesta.put(
-                                        "gananciasHoy",
-                                        conductor.getGananciasHoy());
+                        // Calculamos las estadísticas reales directamente de la tabla servicios
+                        // Esto garantiza que los datos pertenecen 100% al conductor logueado.
+                        Map<String, Object> statsDb = db.queryForMap(
+                                        """
+                                                        SELECT
+                                                            COUNT(*) FILTER (WHERE estado = 'FINALIZADO') as total,
+                                                            COUNT(*) FILTER (WHERE estado = 'FINALIZADO' AND fecha_solicitud::date = CURRENT_DATE) as hoy,
+                                                            COALESCE(SUM(tarifa) FILTER (WHERE estado = 'FINALIZADO' AND fecha_solicitud::date = CURRENT_DATE), 0) as g_hoy,
+                                                            COALESCE(SUM(tarifa) FILTER (WHERE estado = 'FINALIZADO' AND fecha_solicitud >= date_trunc('week', now())), 0) as g_semana
+                                                        FROM servicios
+                                                        WHERE conductor_id = ?
+                                                        """,
+                                        conductor.getId());
 
-                        respuesta.put(
-                                        "gananciasSemana",
-                                        conductor.getGananciasSemana());
-
-                        respuesta.put(
-                                        "viajesHoy",
-                                        conductor.getViajesHoy());
-
-                        respuesta.put(
-                                        "viajesTotal",
-                                        conductor.getViajesTotal());
+                        respuesta.put("gananciasHoy", statsDb.get("g_hoy"));
+                        respuesta.put("gananciasSemana", statsDb.get("g_semana"));
+                        respuesta.put("viajesHoy", statsDb.get("hoy"));
+                        respuesta.put("viajesTotal", statsDb.get("total"));
 
                         // =========================
                         // HISTORIAL
