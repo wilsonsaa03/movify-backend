@@ -125,32 +125,31 @@ public class TransporteControlador {
             String descripcion = solicitud.getOrDefault("descripcion", "").toString();
 
             // Extraer campos adicionales con valores por defecto si no vienen
-            String nombreRemitente    = solicitud.getOrDefault("nombre_remitente", "").toString();
-            String telefonoRemitente  = solicitud.getOrDefault("telefono_remitente", "").toString();
+            String nombreRemitente = solicitud.getOrDefault("nombre_remitente", "").toString();
+            String telefonoRemitente = solicitud.getOrDefault("telefono_remitente", "").toString();
             String nombreDestinatario = solicitud.getOrDefault("nombre_destinatario", "").toString();
             String telefonoDestinatario = solicitud.getOrDefault("telefono_destinatario", "").toString();
-            String tipoPaquete        = solicitud.getOrDefault("tipo_paquete", "").toString();
-            String pesoKg             = solicitud.getOrDefault("peso_kg", "").toString();
-            String metodoPago         = solicitud.getOrDefault("metodo_pago", "efectivo").toString();
+            String tipoPaquete = solicitud.getOrDefault("tipo_paquete", "").toString();
+            String pesoKg = solicitud.getOrDefault("peso_kg", "").toString();
+            String metodoPago = solicitud.getOrDefault("metodo_pago", "efectivo").toString();
 
             String sql = """
-                INSERT INTO servicios (
-                    usuario_id, origen_lat, origen_lng, destino_lat, destino_lng,
-                    distancia_km, tarifa, estado, tipo, descripcion, fecha_solicitud,
-                    nombre_remitente, telefono_remitente,
-                    nombre_destinatario, telefono_destinatario,
-                    tipo_paquete, peso_kg, metodo_pago
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?)
-                RETURNING id
-                """;
+                    INSERT INTO servicios (
+                        usuario_id, origen_lat, origen_lng, destino_lat, destino_lng,
+                        distancia_km, tarifa, estado, tipo, descripcion, fecha_solicitud,
+                        nombre_remitente, telefono_remitente,
+                        nombre_destinatario, telefono_destinatario,
+                        tipo_paquete, peso_kg, metodo_pago
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id
+                    """;
 
             Long servicioId = db.queryForObject(sql, Long.class,
-                usuarioId, origenLat, origenLng, destinoLat, destinoLng,
-                distanciaKm, tarifa, Servicio.EstadoServicio.PENDIENTE.name(), tipo, descripcion,
-                nombreRemitente, telefonoRemitente,
-                nombreDestinatario, telefonoDestinatario,
-                tipoPaquete, pesoKg, metodoPago
-            );
+                    usuarioId, origenLat, origenLng, destinoLat, destinoLng,
+                    distanciaKm, tarifa, Servicio.EstadoServicio.PENDIENTE.name(), tipo, descripcion,
+                    nombreRemitente, telefonoRemitente,
+                    nombreDestinatario, telefonoDestinatario,
+                    tipoPaquete, pesoKg, metodoPago);
 
             // --- Lógica para buscar y notificar conductores cercanos ---
             // 1. Buscar conductores activos cercanos al origen del servicio
@@ -717,12 +716,14 @@ public class TransporteControlador {
             Integer puntuacion = Integer.parseInt(body.get("puntos").toString());
             String comentario = body.getOrDefault("comentario", "").toString();
 
-            db.update("INSERT INTO calificaciones (servicio_id, usuario_id, calificacion, comentario, fecha) VALUES (?, ?, ?, ?, NOW())",
+            db.update(
+                    "INSERT INTO calificaciones (servicio_id, usuario_id, calificacion, comentario, fecha) VALUES (?, ?, ?, ?, NOW())",
                     servicioId, usuarioId, puntuacion, comentario);
 
             return ResponseEntity.ok(Map.of("message", "Calificación guardada."));
         } catch (Exception e) {
-            return ResponseEntity.status(400).body(Map.of("error", "Error al guardar calificación", "details", e.getMessage()));
+            return ResponseEntity.status(400)
+                    .body(Map.of("error", "Error al guardar calificación", "details", e.getMessage()));
         }
     }
 
@@ -737,98 +738,98 @@ public class TransporteControlador {
         try {
             // ── Ganancias HOY ──────────────────────────────────────────
             Map<String, Object> hoy = db.queryForMap("""
-                SELECT
-                    COALESCE(SUM(tarifa), 0)  AS ganancias_hoy,
-                    COUNT(*)                  AS viajes_hoy
-                FROM servicios
-                WHERE conductor_id = ?
-                  AND estado = 'FINALIZADO'
-                  AND DATE(fecha_fin) = CURRENT_DATE
-                """, conductorId);
+                    SELECT
+                        COALESCE(SUM(tarifa), 0)  AS ganancias_hoy,
+                        COUNT(*)                  AS viajes_hoy
+                    FROM servicios
+                    WHERE conductor_id = ?
+                      AND estado = 'FINALIZADO'
+                      AND DATE(fecha_fin) = CURRENT_DATE
+                    """, conductorId);
 
             Map<String, Object> ayer = db.queryForMap("""
-                SELECT COALESCE(SUM(tarifa), 0) AS ganancias_ayer
-                FROM servicios
-                WHERE conductor_id = ?
-                  AND estado = 'FINALIZADO'
-                  AND DATE(fecha_fin) = CURRENT_DATE - 1
-                """, conductorId);
+                    SELECT COALESCE(SUM(tarifa), 0) AS ganancias_ayer
+                    FROM servicios
+                    WHERE conductor_id = ?
+                      AND estado = 'FINALIZADO'
+                      AND DATE(fecha_fin) = CURRENT_DATE - 1
+                    """, conductorId);
 
             // ── Ganancias SEMANA ───────────────────────────────────────
             Map<String, Object> semana = db.queryForMap("""
-                SELECT
-                    COALESCE(SUM(tarifa), 0) AS ganancias_semana,
-                    COUNT(*)                 AS viajes_semana
-                FROM servicios
-                WHERE conductor_id = ?
-                  AND estado = 'FINALIZADO'
-                  AND fecha_fin >= DATE_TRUNC('week', CURRENT_DATE)
-                """, conductorId);
+                    SELECT
+                        COALESCE(SUM(tarifa), 0) AS ganancias_semana,
+                        COUNT(*)                 AS viajes_semana
+                    FROM servicios
+                    WHERE conductor_id = ?
+                      AND estado = 'FINALIZADO'
+                      AND fecha_fin >= DATE_TRUNC('week', CURRENT_DATE)
+                    """, conductorId);
 
             Map<String, Object> semanaAnterior = db.queryForMap("""
-                SELECT COALESCE(SUM(tarifa), 0) AS ganancias_semana_ant
-                FROM servicios
-                WHERE conductor_id = ?
-                  AND estado = 'FINALIZADO'
-                  AND fecha_fin >= DATE_TRUNC('week', CURRENT_DATE) - INTERVAL '7 days'
-                  AND fecha_fin <  DATE_TRUNC('week', CURRENT_DATE)
-                """, conductorId);
+                    SELECT COALESCE(SUM(tarifa), 0) AS ganancias_semana_ant
+                    FROM servicios
+                    WHERE conductor_id = ?
+                      AND estado = 'FINALIZADO'
+                      AND fecha_fin >= DATE_TRUNC('week', CURRENT_DATE) - INTERVAL '7 days'
+                      AND fecha_fin <  DATE_TRUNC('week', CURRENT_DATE)
+                    """, conductorId);
 
             // ── Ganancias MES ──────────────────────────────────────────
             Map<String, Object> mes = db.queryForMap("""
-                SELECT
-                    COALESCE(SUM(tarifa), 0) AS ganancias_mes,
-                    COUNT(*)                 AS viajes_mes
-                FROM servicios
-                WHERE conductor_id = ?
-                  AND estado = 'FINALIZADO'
-                  AND fecha_fin >= DATE_TRUNC('month', CURRENT_DATE)
-                """, conductorId);
+                    SELECT
+                        COALESCE(SUM(tarifa), 0) AS ganancias_mes,
+                        COUNT(*)                 AS viajes_mes
+                    FROM servicios
+                    WHERE conductor_id = ?
+                      AND estado = 'FINALIZADO'
+                      AND fecha_fin >= DATE_TRUNC('month', CURRENT_DATE)
+                    """, conductorId);
 
             Map<String, Object> mesAnterior = db.queryForMap("""
-                SELECT COALESCE(SUM(tarifa), 0) AS ganancias_mes_ant
-                FROM servicios
-                WHERE conductor_id = ?
-                  AND estado = 'FINALIZADO'
-                  AND fecha_fin >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month'
-                  AND fecha_fin <  DATE_TRUNC('month', CURRENT_DATE)
-                """, conductorId);
+                    SELECT COALESCE(SUM(tarifa), 0) AS ganancias_mes_ant
+                    FROM servicios
+                    WHERE conductor_id = ?
+                      AND estado = 'FINALIZADO'
+                      AND fecha_fin >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month'
+                      AND fecha_fin <  DATE_TRUNC('month', CURRENT_DATE)
+                    """, conductorId);
 
             // ── Total acumulado ────────────────────────────────────────
             Map<String, Object> total = db.queryForMap("""
-                SELECT COALESCE(SUM(tarifa), 0) AS total_acumulado
-                FROM servicios
-                WHERE conductor_id = ? AND estado = 'FINALIZADO'
-                """, conductorId);
+                    SELECT COALESCE(SUM(tarifa), 0) AS total_acumulado
+                    FROM servicios
+                    WHERE conductor_id = ? AND estado = 'FINALIZADO'
+                    """, conductorId);
 
             // ── Saldo disponible (últimas 48h no retiradas) ────────────
             Map<String, Object> saldo = db.queryForMap("""
-                SELECT COALESCE(SUM(tarifa), 0) AS saldo_disponible
-                FROM servicios
-                WHERE conductor_id = ?
-                  AND estado = 'FINALIZADO'
-                  AND fecha_fin >= NOW() - INTERVAL '48 hours'
-                """, conductorId);
+                    SELECT COALESCE(SUM(tarifa), 0) AS saldo_disponible
+                    FROM servicios
+                    WHERE conductor_id = ?
+                      AND estado = 'FINALIZADO'
+                      AND fecha_fin >= NOW() - INTERVAL '48 hours'
+                    """, conductorId);
 
             // ── Desglose: propinas e incentivos ───────────────────────
             double gananciaViajes = ((Number) mes.get("ganancias_mes")).doubleValue();
-            double propinas       = 0.0;
-            double incentivos     = 0.0;
+            double propinas = 0.0;
+            double incentivos = 0.0;
             try {
                 Map<String, Object> propRow = db.queryForMap("""
-                    SELECT COALESCE(SUM(monto), 0) AS propinas
-                    FROM historial_pagos
-                    WHERE conductor_id = ? AND tipo = 'PROPINA'
-                      AND fecha >= DATE_TRUNC('month', CURRENT_DATE)
-                    """, conductorId);
+                        SELECT COALESCE(SUM(monto), 0) AS propinas
+                        FROM historial_pagos
+                        WHERE conductor_id = ? AND tipo = 'PROPINA'
+                          AND fecha >= DATE_TRUNC('month', CURRENT_DATE)
+                        """, conductorId);
                 propinas = ((Number) propRow.get("propinas")).doubleValue();
 
                 Map<String, Object> incRow = db.queryForMap("""
-                    SELECT COALESCE(SUM(monto), 0) AS incentivos
-                    FROM historial_pagos
-                    WHERE conductor_id = ? AND tipo = 'INCENTIVO'
-                      AND fecha >= DATE_TRUNC('month', CURRENT_DATE)
-                    """, conductorId);
+                        SELECT COALESCE(SUM(monto), 0) AS incentivos
+                        FROM historial_pagos
+                        WHERE conductor_id = ? AND tipo = 'INCENTIVO'
+                          AND fecha >= DATE_TRUNC('month', CURRENT_DATE)
+                        """, conductorId);
                 incentivos = ((Number) incRow.get("incentivos")).doubleValue();
 
                 gananciaViajes = gananciaViajes - propinas - incentivos;
@@ -838,147 +839,157 @@ public class TransporteControlador {
 
             // ── Métodos de pago ────────────────────────────────────────
             List<Map<String, Object>> metodosRaw = db.queryForList("""
-                SELECT
-                    COALESCE(metodo_pago, 'efectivo') AS nombre,
-                    COALESCE(SUM(tarifa), 0)          AS monto
-                FROM servicios
-                WHERE conductor_id = ?
-                  AND estado = 'FINALIZADO'
-                  AND fecha_fin >= DATE_TRUNC('month', CURRENT_DATE)
-                GROUP BY metodo_pago
-                """, conductorId);
+                    SELECT
+                        COALESCE(metodo_pago, 'efectivo') AS nombre,
+                        COALESCE(SUM(tarifa), 0)          AS monto
+                    FROM servicios
+                    WHERE conductor_id = ?
+                      AND estado = 'FINALIZADO'
+                      AND fecha_fin >= DATE_TRUNC('month', CURRENT_DATE)
+                    GROUP BY metodo_pago
+                    """, conductorId);
 
             double totalMes = ((Number) mes.get("ganancias_mes")).doubleValue();
             List<java.util.Map<String, Object>> metodos = new java.util.ArrayList<>();
             for (Map<String, Object> m : metodosRaw) {
                 double monto = ((Number) m.get("monto")).doubleValue();
-                double pct   = totalMes > 0 ? Math.round((monto / totalMes) * 1000.0) / 10.0 : 0.0;
+                double pct = totalMes > 0 ? Math.round((monto / totalMes) * 1000.0) / 10.0 : 0.0;
                 String nombre = m.get("nombre").toString();
                 java.util.Map<String, Object> metodo = new java.util.HashMap<>();
                 metodo.put("nombre", nombre.substring(0, 1).toUpperCase() + nombre.substring(1));
-                metodo.put("monto",  monto);
-                metodo.put("pct",    pct);
+                metodo.put("monto", monto);
+                metodo.put("pct", pct);
                 metodos.add(metodo);
             }
 
             // ── Cálculo de tendencias ──────────────────────────────────
-            double gHoy   = ((Number) hoy.get("ganancias_hoy")).doubleValue();
-            double gAyer  = ((Number) ayer.get("ganancias_ayer")).doubleValue();
-            double gSem   = ((Number) semana.get("ganancias_semana")).doubleValue();
-            double gSemA  = ((Number) semanaAnterior.get("ganancias_semana_ant")).doubleValue();
-            double gMes   = ((Number) mes.get("ganancias_mes")).doubleValue();
-            double gMesA  = ((Number) mesAnterior.get("ganancias_mes_ant")).doubleValue();
+            double gHoy = ((Number) hoy.get("ganancias_hoy")).doubleValue();
+            double gAyer = ((Number) ayer.get("ganancias_ayer")).doubleValue();
+            double gSem = ((Number) semana.get("ganancias_semana")).doubleValue();
+            double gSemA = ((Number) semanaAnterior.get("ganancias_semana_ant")).doubleValue();
+            double gMes = ((Number) mes.get("ganancias_mes")).doubleValue();
+            double gMesA = ((Number) mesAnterior.get("ganancias_mes_ant")).doubleValue();
 
-            double trendHoy   = gAyer  > 0 ? Math.round(((gHoy  - gAyer)  / gAyer)  * 100.0) : 0;
-            double trendSem   = gSemA  > 0 ? Math.round(((gSem  - gSemA)  / gSemA)  * 100.0) : 0;
-            double trendMes   = gMesA  > 0 ? Math.round(((gMes  - gMesA)  / gMesA)  * 100.0) : 0;
+            double trendHoy = gAyer > 0 ? Math.round(((gHoy - gAyer) / gAyer) * 100.0) : 0;
+            double trendSem = gSemA > 0 ? Math.round(((gSem - gSemA) / gSemA) * 100.0) : 0;
+            double trendMes = gMesA > 0 ? Math.round(((gMes - gMesA) / gMesA) * 100.0) : 0;
 
             // ── Cuenta bancaria (últimos 4 dígitos) ────────────────────
             String ultimosCuatro = "4567"; // Valor por defecto
             try {
                 List<Map<String, Object>> cuenta = db.queryForList("""
-                    SELECT numero_cuenta FROM historial_pagos
-                    WHERE conductor_id = ? AND tipo = 'RETIRO' ORDER BY fecha DESC LIMIT 1
-                    """, conductorId);
+                        SELECT numero_cuenta FROM historial_pagos
+                        WHERE conductor_id = ? AND tipo = 'RETIRO' ORDER BY fecha DESC LIMIT 1
+                        """, conductorId);
                 if (!cuenta.isEmpty() && cuenta.get(0).get("numero_cuenta") != null) {
                     String num = cuenta.get(0).get("numero_cuenta").toString();
                     ultimosCuatro = num.length() >= 4 ? num.substring(num.length() - 4) : num;
                 }
-            } catch (Exception ex) { /* ignorar */ }
+            } catch (Exception ex) {
+                /* ignorar */ }
 
             // ── Respuesta ──────────────────────────────────────────────
             java.util.Map<String, Object> resp = new java.util.HashMap<>();
-            resp.put("ganancias_hoy",    gHoy);
-            resp.put("viajes_hoy",       ((Number) hoy.get("viajes_hoy")).intValue());
-            resp.put("trend_hoy",        trendHoy);
+            resp.put("ganancias_hoy", gHoy);
+            resp.put("viajes_hoy", ((Number) hoy.get("viajes_hoy")).intValue());
+            resp.put("trend_hoy", trendHoy);
             resp.put("ganancias_semana", gSem);
-            resp.put("viajes_semana",    ((Number) semana.get("viajes_semana")).intValue());
-            resp.put("trend_semana",     trendSem);
-            resp.put("ganancias_mes",    gMes);
-            resp.put("viajes_mes",       ((Number) mes.get("viajes_mes")).intValue());
-            resp.put("trend_mes",        trendMes);
+            resp.put("viajes_semana", ((Number) semana.get("viajes_semana")).intValue());
+            resp.put("trend_semana", trendSem);
+            resp.put("ganancias_mes", gMes);
+            resp.put("viajes_mes", ((Number) mes.get("viajes_mes")).intValue());
+            resp.put("trend_mes", trendMes);
             resp.put("saldo_disponible", ((Number) saldo.get("saldo_disponible")).doubleValue());
-            resp.put("total_acumulado",  ((Number) total.get("total_acumulado")).doubleValue());
-            resp.put("ganancia_viajes",  Math.max(0, gananciaViajes));
-            resp.put("propinas",         propinas);
-            resp.put("incentivos",       incentivos);
-            resp.put("metodos_pago",     metodos);
-            resp.put("ultimos_cuatro",   ultimosCuatro);
+            resp.put("total_acumulado", ((Number) total.get("total_acumulado")).doubleValue());
+            resp.put("ganancia_viajes", Math.max(0, gananciaViajes));
+            resp.put("propinas", propinas);
+            resp.put("incentivos", incentivos);
+            resp.put("metodos_pago", metodos);
+            resp.put("ultimos_cuatro", ultimosCuatro);
 
             return ResponseEntity.ok(resp);
         } catch (Exception e) {
             e.printStackTrace();
-            return ResponseEntity.status(500).body(Map.of("error", "Error al obtener estadísticas", "details", e.getMessage()));
+            return ResponseEntity.status(500)
+                    .body(Map.of("error", "Error al obtener estadísticas", "details", e.getMessage()));
         }
     }
 
     /**
      * CONDUCTOR: Lista de transacciones paginadas.
-     * GET /api/transporte/transacciones-conductor/{conductorId}?filtro=mes&page=0&size=5
+     * GET
+     * /api/transporte/transacciones-conductor/{conductorId}?filtro=mes&page=0&size=5
      */
     @GetMapping("/transacciones-conductor/{conductorId}")
     public ResponseEntity<?> getTransacciones(
             @PathVariable("conductorId") Long conductorId,
-            @org.springframework.web.bind.annotation.RequestParam(defaultValue = "mes")  String filtro,
-            @org.springframework.web.bind.annotation.RequestParam(defaultValue = "0")    int page,
-            @org.springframework.web.bind.annotation.RequestParam(defaultValue = "5")    int size) {
+            @org.springframework.web.bind.annotation.RequestParam(defaultValue = "mes") String filtro,
+            @org.springframework.web.bind.annotation.RequestParam(defaultValue = "0") int page,
+            @org.springframework.web.bind.annotation.RequestParam(defaultValue = "5") int size) {
         try {
             String condFecha = switch (filtro) {
-                case "hoy"     -> "AND DATE(s.fecha_fin) = CURRENT_DATE";
-                case "semana"  -> "AND s.fecha_fin >= DATE_TRUNC('week', CURRENT_DATE)";
+                case "hoy" -> "AND DATE(s.fecha_fin) = CURRENT_DATE";
+                case "semana" -> "AND s.fecha_fin >= DATE_TRUNC('week', CURRENT_DATE)";
                 case "mes_cal",
-                     "mes"     -> "AND s.fecha_fin >= DATE_TRUNC('month', CURRENT_DATE)";
-                case "anio"    -> "AND s.fecha_fin >= DATE_TRUNC('year', CURRENT_DATE)";
-                default        -> "";
+                        "mes" ->
+                    "AND s.fecha_fin >= DATE_TRUNC('month', CURRENT_DATE)";
+                case "anio" -> "AND s.fecha_fin >= DATE_TRUNC('year', CURRENT_DATE)";
+                default -> "";
             };
 
             int offset = page * size;
 
             // Viajes completados (tipo Pago)
             List<Map<String, Object>> viajes = db.queryForList("""
-                SELECT
-                    s.id,
-                    'Pago'                                          AS tipo,
-                    'Viaje completado'                             AS titulo,
-                    CONCAT(
-                        COALESCE(s.origen_lat::text, '?'), ' → ',
-                        COALESCE(s.destino_lat::text, '?')
-                    )                                              AS subtitulo,
-                    TO_CHAR(s.fecha_fin, 'DD Mon YYYY')           AS fecha,
-                    TO_CHAR(s.fecha_fin, 'HH12:MI AM')            AS hora,
-                    s.tarifa                                       AS monto
-                FROM servicios s
-                WHERE s.conductor_id = ?
-                  AND s.estado = 'FINALIZADO'
-                """ + condFecha + """
-                ORDER BY s.fecha_fin DESC
-                LIMIT ? OFFSET ?
-                """, conductorId, size, offset);
+                    SELECT
+                        s.id,
+                        'Pago'                                          AS tipo,
+                        'Viaje completado'                             AS titulo,
+                    CASE
+                        WHEN s.origen_direccion IS NOT NULL AND s.origen_direccion != ''
+                        THEN CONCAT(s.origen_direccion, ' → ', s.destino_direccion)
+                        ELSE CONCAT(
+                            TRUNC(s.origen_lat::numeric, 4), ', ', TRUNC(s.origen_lng::numeric, 4),
+                            ' → ',
+                            TRUNC(s.destino_lat::numeric, 4), ', ', TRUNC(s.destino_lng::numeric, 4)
+                        )
+                    END                                            AS subtitulo,
+                        TO_CHAR(s.fecha_fin, 'DD Mon YYYY')           AS fecha,
+                        TO_CHAR(s.fecha_fin, 'HH12:MI AM')            AS hora,
+                        s.tarifa                                       AS monto
+                    FROM servicios s
+                    WHERE s.conductor_id = ?
+                      AND s.estado = 'FINALIZADO'
+                    """ + condFecha + """
+                    ORDER BY s.fecha_fin DESC
+                    LIMIT ? OFFSET ?
+                    """, conductorId, size, offset);
 
             // Intentar agregar propinas/incentivos/retiros de historial_pagos
             List<Map<String, Object>> extras = new java.util.ArrayList<>();
             try {
                 extras = db.queryForList("""
-                    SELECT
-                        hp.id,
-                        hp.tipo,
-                        CASE hp.tipo
-                            WHEN 'PROPINA'   THEN 'Propina recibida'
-                            WHEN 'INCENTIVO' THEN 'Incentivo por objetivo'
-                            WHEN 'RETIRO'    THEN 'Retiro realizado'
-                            ELSE hp.tipo
-                        END                                        AS titulo,
-                        hp.descripcion                             AS subtitulo,
-                        TO_CHAR(hp.fecha, 'DD Mon YYYY')           AS fecha,
-                        TO_CHAR(hp.fecha, 'HH12:MI AM')            AS hora,
-                        CASE WHEN hp.tipo = 'RETIRO' THEN -hp.monto ELSE hp.monto END AS monto
-                    FROM historial_pagos hp
-                    WHERE hp.conductor_id = ?
-                    """ + condFecha.replace("s.fecha_fin", "hp.fecha") + """
-                    ORDER BY hp.fecha DESC
-                    LIMIT ? OFFSET ?
-                    """, conductorId, size, offset);
-            } catch (Exception ex) { /* historial_pagos puede no existir */ }
+                        SELECT
+                            hp.id,
+                            hp.tipo,
+                            CASE hp.tipo
+                                WHEN 'PROPINA'   THEN 'Propina recibida'
+                                WHEN 'INCENTIVO' THEN 'Incentivo por objetivo'
+                                WHEN 'RETIRO'    THEN 'Retiro realizado'
+                                ELSE hp.tipo
+                            END                                        AS titulo,
+                            hp.descripcion                             AS subtitulo,
+                            TO_CHAR(hp.fecha, 'DD Mon YYYY')           AS fecha,
+                            TO_CHAR(hp.fecha, 'HH12:MI AM')            AS hora,
+                            CASE WHEN hp.tipo = 'RETIRO' THEN -hp.monto ELSE hp.monto END AS monto
+                        FROM historial_pagos hp
+                        WHERE hp.conductor_id = ?
+                        """ + condFecha.replace("s.fecha_fin", "hp.fecha") + """
+                        ORDER BY hp.fecha DESC
+                        LIMIT ? OFFSET ?
+                        """, conductorId, size, offset);
+            } catch (Exception ex) {
+                /* historial_pagos puede no existir */ }
 
             // Combinar viajes + extras, ordenar por fecha desc
             List<Map<String, Object>> todos = new java.util.ArrayList<>();
@@ -988,7 +999,8 @@ public class TransporteControlador {
             return ResponseEntity.ok(todos);
         } catch (Exception e) {
             e.printStackTrace();
-            return ResponseEntity.status(500).body(Map.of("error", "Error al obtener transacciones", "details", e.getMessage()));
+            return ResponseEntity.status(500)
+                    .body(Map.of("error", "Error al obtener transacciones", "details", e.getMessage()));
         }
     }
 
@@ -1003,46 +1015,47 @@ public class TransporteControlador {
         try {
             String sql = switch (filtro) {
                 case "semana" -> """
-                    SELECT
-                        TO_CHAR(DATE_TRUNC('day', fecha_fin), 'DD Mon') AS dia,
-                        COALESCE(SUM(tarifa), 0)                        AS valor
-                    FROM servicios
-                    WHERE conductor_id = ?
-                      AND estado = 'FINALIZADO'
-                      AND fecha_fin >= DATE_TRUNC('week', CURRENT_DATE)
-                    GROUP BY DATE_TRUNC('day', fecha_fin)
-                    ORDER BY DATE_TRUNC('day', fecha_fin)
-                    """;
+                        SELECT
+                            TO_CHAR(DATE_TRUNC('day', fecha_fin), 'DD Mon') AS dia,
+                            COALESCE(SUM(tarifa), 0)                        AS valor
+                        FROM servicios
+                        WHERE conductor_id = ?
+                          AND estado = 'FINALIZADO'
+                          AND fecha_fin >= DATE_TRUNC('week', CURRENT_DATE)
+                        GROUP BY DATE_TRUNC('day', fecha_fin)
+                        ORDER BY DATE_TRUNC('day', fecha_fin)
+                        """;
                 case "anio" -> """
-                    SELECT
-                        TO_CHAR(DATE_TRUNC('month', fecha_fin), 'Mon YYYY') AS dia,
-                        COALESCE(SUM(tarifa), 0)                             AS valor
-                    FROM servicios
-                    WHERE conductor_id = ?
-                      AND estado = 'FINALIZADO'
-                      AND fecha_fin >= DATE_TRUNC('year', CURRENT_DATE)
-                    GROUP BY DATE_TRUNC('month', fecha_fin)
-                    ORDER BY DATE_TRUNC('month', fecha_fin)
-                    """;
+                        SELECT
+                            TO_CHAR(DATE_TRUNC('month', fecha_fin), 'Mon YYYY') AS dia,
+                            COALESCE(SUM(tarifa), 0)                             AS valor
+                        FROM servicios
+                        WHERE conductor_id = ?
+                          AND estado = 'FINALIZADO'
+                          AND fecha_fin >= DATE_TRUNC('year', CURRENT_DATE)
+                        GROUP BY DATE_TRUNC('month', fecha_fin)
+                        ORDER BY DATE_TRUNC('month', fecha_fin)
+                        """;
                 default -> // mes
                     """
-                    SELECT
-                        TO_CHAR(DATE_TRUNC('day', fecha_fin), 'DD Mon') AS dia,
-                        COALESCE(SUM(tarifa), 0)                        AS valor
-                    FROM servicios
-                    WHERE conductor_id = ?
-                      AND estado = 'FINALIZADO'
-                      AND fecha_fin >= DATE_TRUNC('month', CURRENT_DATE)
-                    GROUP BY DATE_TRUNC('day', fecha_fin)
-                    ORDER BY DATE_TRUNC('day', fecha_fin)
-                    """;
+                            SELECT
+                                TO_CHAR(DATE_TRUNC('day', fecha_fin), 'DD Mon') AS dia,
+                                COALESCE(SUM(tarifa), 0)                        AS valor
+                            FROM servicios
+                            WHERE conductor_id = ?
+                              AND estado = 'FINALIZADO'
+                              AND fecha_fin >= DATE_TRUNC('month', CURRENT_DATE)
+                            GROUP BY DATE_TRUNC('day', fecha_fin)
+                            ORDER BY DATE_TRUNC('day', fecha_fin)
+                            """;
             };
 
             List<Map<String, Object>> puntos = db.queryForList(sql, conductorId);
             return ResponseEntity.ok(puntos);
         } catch (Exception e) {
             e.printStackTrace();
-            return ResponseEntity.status(500).body(Map.of("error", "Error al obtener gráfica", "details", e.getMessage()));
+            return ResponseEntity.status(500)
+                    .body(Map.of("error", "Error al obtener gráfica", "details", e.getMessage()));
         }
     }
 
@@ -1055,7 +1068,7 @@ public class TransporteControlador {
     public ResponseEntity<?> solicitarRetiro(@RequestBody Map<String, Object> body) {
         try {
             Long conductorId = Long.parseLong(body.get("conductor_id").toString());
-            Double monto     = Double.parseDouble(body.get("monto").toString());
+            Double monto = Double.parseDouble(body.get("monto").toString());
 
             if (monto <= 0) {
                 return ResponseEntity.status(400).body(Map.of("error", "Monto inválido"));
@@ -1064,9 +1077,9 @@ public class TransporteControlador {
             // Registrar en historial_pagos (si existe la tabla)
             try {
                 db.update("""
-                    INSERT INTO historial_pagos (conductor_id, tipo, monto, descripcion, fecha)
-                    VALUES (?, 'RETIRO', ?, 'Transferencia a cuenta registrada', NOW())
-                    """, conductorId, monto);
+                        INSERT INTO historial_pagos (conductor_id, tipo, monto, descripcion, fecha)
+                        VALUES (?, 'RETIRO', ?, 'Transferencia a cuenta registrada', NOW())
+                        """, conductorId, monto);
             } catch (Exception ex) {
                 // Si la tabla no existe, simplemente loguear
                 System.out.println("⚠️ historial_pagos no disponible: " + ex.getMessage());
@@ -1074,7 +1087,8 @@ public class TransporteControlador {
 
             return ResponseEntity.ok(Map.of("message", "Retiro solicitado. Se procesará en 1-2 días hábiles."));
         } catch (Exception e) {
-            return ResponseEntity.status(500).body(Map.of("error", "Error al procesar retiro", "details", e.getMessage()));
+            return ResponseEntity.status(500)
+                    .body(Map.of("error", "Error al procesar retiro", "details", e.getMessage()));
         }
     }
 }

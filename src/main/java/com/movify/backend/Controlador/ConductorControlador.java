@@ -205,32 +205,40 @@ public class ConductorControlador {
         @PutMapping("/perfil/actualizar")
         @Transactional
         public ResponseEntity<?> actualizarPerfil(@RequestBody Map<String, Object> datos) {
-            try {
-                // 1. Extracción segura de datos para evitar NullPointerException
-                String correo = datos.get("correo") != null ? datos.get("correo").toString() : null;
-                String nombre = datos.get("nombre") != null ? datos.get("nombre").toString() : null;
-                String telefono = datos.get("telefono") != null ? datos.get("telefono").toString() : null;
+                try {
+                        // 1. Extracción segura de datos para evitar NullPointerException
+                        String correo = datos.get("correo") != null ? datos.get("correo").toString() : null;
+                        String nombre = datos.get("nombre") != null ? datos.get("nombre").toString() : null;
+                        String telefono = datos.get("telefono") != null ? datos.get("telefono").toString() : null;
+                        String ciudad = datos.get("ciudad") != null ? datos.get("ciudad").toString() : "Buenaventura";
 
-                if (correo == null) {
-                    return ResponseEntity.badRequest().body(Map.of("error", "El correo es obligatorio"));
+                        if (correo == null) {
+                                return ResponseEntity.badRequest().body(Map.of("error", "El correo es obligatorio"));
+                        }
+
+                        // 2. Buscar el usuario por correo
+                        Usuario usuario = usuarioRepositorio.findByCorreo(correo)
+                                        .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
+
+                        // 3. Actualizar campos
+                        if (nombre != null)
+                                usuario.setNombre(nombre);
+                        if (telefono != null)
+                                usuario.setTelefono(telefono);
+
+                        usuarioRepositorio.save(usuario);
+
+                        // 4. Actualizar Ciudad en la tabla conductores
+                        db.update("UPDATE conductores SET ciudad = ? WHERE usuario_id = ?", ciudad, usuario.getId());
+
+                        return ResponseEntity.ok(Map.of("mensaje", "Perfil actualizado correctamente"));
+
+                } catch (Exception e) {
+                        e.printStackTrace(); // Esto te permitirá ver el error real en la consola de Java
+                                             // (IntelliJ/Eclipse)
+                        return ResponseEntity.badRequest()
+                                        .body(Map.of("error", "Error al actualizar: " + e.getMessage()));
                 }
-
-                // 2. Buscar el usuario por correo
-                Usuario usuario = usuarioRepositorio.findByCorreo(correo)
-                        .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
-
-                // 3. Actualizar campos
-                if (nombre != null) usuario.setNombre(nombre);
-                if (telefono != null) usuario.setTelefono(telefono);
-
-                usuarioRepositorio.save(usuario);
-
-                return ResponseEntity.ok(Map.of("mensaje", "Perfil actualizado correctamente"));
-
-            } catch (Exception e) {
-                e.printStackTrace(); // Esto te permitirá ver el error real en la consola de Java (IntelliJ/Eclipse)
-                return ResponseEntity.badRequest().body(Map.of("error", "Error al actualizar: " + e.getMessage()));
-            }
         }
 
         // =========================
@@ -272,6 +280,13 @@ public class ConductorControlador {
                         Map<String, Object> respuesta = new HashMap<>();
 
                         respuesta.put("conductor_id", conductor.getId());
+
+                        // Ciudad con valor por defecto
+                        String ciudad = db.queryForObject(
+                                        "SELECT COALESCE(ciudad, 'Buenaventura') FROM conductores WHERE id = ?",
+                                        String.class, conductor.getId());
+                        respuesta.put("ciudad", ciudad);
+
                         // =========================
                         // DATOS PERSONALES
                         // =========================
