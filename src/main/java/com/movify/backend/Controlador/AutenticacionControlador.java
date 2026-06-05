@@ -7,6 +7,7 @@ import com.movify.backend.Servicio.AutenticacionServicio;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
@@ -27,6 +28,13 @@ public class AutenticacionControlador {
 
     @Autowired
     private JdbcTemplate db;
+
+    @GetMapping("/generar-hash")
+    public ResponseEntity<?> generarHash() {
+        BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
+        String hash = encoder.encode("123456");
+        return ResponseEntity.ok(Map.of("hash", hash));
+    }
 
     // =========================
     // REGISTRO DE ADMIN
@@ -54,12 +62,15 @@ public class AutenticacionControlador {
         String correo = data.get("correo");
         String password = data.get("password");
 
+        System.out.println("🔑 Intento login - Correo: " + correo + " | Password: " + password);
+
         Optional<Usuario> usuarioOptional = usuarioRepositorio.findByCorreo(correo);
 
         // VALIDAR USUARIO
 
         if (usuarioOptional.isEmpty()) {
 
+            System.out.println("❌ Usuario no encontrado");
             return ResponseEntity
                     .badRequest()
                     .body(Map.of(
@@ -68,6 +79,10 @@ public class AutenticacionControlador {
         }
 
         Usuario usuario = usuarioOptional.get();
+
+        System.out.println("✅ Usuario encontrado: " + usuario.getNombre() + " | Estado: " + usuario.getEstado());
+        System.out.println("🔐 Hash en BD: " + usuario.getPassword());
+        System.out.println("🔐 Match: " + autenticacionServicio.validarPassword(password, usuario.getPassword()));
 
         // VALIDAR ESTADO CONDUCTOR (PENDIENTE O RECHAZADO)
         if ("conductor".equalsIgnoreCase(usuario.getRol())) {
@@ -106,6 +121,7 @@ public class AutenticacionControlador {
 
         if (!autenticacionServicio.validarPassword(password, usuario.getPassword())) {
 
+            System.out.println("❌ Password no coincide. Plana: " + password + " | Hash: " + usuario.getPassword());
             return ResponseEntity
                     .badRequest()
                     .body(Map.of(

@@ -1174,16 +1174,49 @@ public class TransporteControlador {
         try {
             String nuevoEstado = body.get("estado").toString().toLowerCase();
             String motivo = body.getOrDefault("motivo_rechazo", "").toString();
-            Long adminId = Long.parseLong(body.getOrDefault("admin_id", "0").toString());
 
-            db.update("""
-                    UPDATE conductores
-                    SET estado = ?, motivo_rechazo = ?, fecha_revision = NOW(), admin_id_revisor = ?
-                    WHERE id = ?
-                    """, nuevoEstado, motivo, adminId, id);
+            // Solo actualiza campos que seguro existen
+            db.update("UPDATE conductores SET estado = ?, motivo_rechazo = ? WHERE id = ?",
+                    nuevoEstado, motivo, id);
+
             return ResponseEntity.ok(Map.of("message", "Estado del conductor actualizado a " + nuevoEstado));
         } catch (Exception e) {
-            return ResponseEntity.status(400).body(Map.of("error", "Error al actualizar estado"));
+            e.printStackTrace();
+            return ResponseEntity.status(400).body(Map.of(
+                    "error", "Error al actualizar estado",
+                    "details", e.getMessage()));
+        }
+    }
+
+    /**
+     * ADMIN: Obtiene todos los servicios de la plataforma.
+     */
+    @GetMapping("/admin/servicios")
+    public ResponseEntity<?> getTodosLosServicios() {
+        try {
+            List<Map<String, Object>> servicios = db.queryForList("""
+                    SELECT
+                        s.id,
+                        s.tipo,
+                        s.estado,
+                        s.tarifa,
+                        s.fecha_solicitud,
+                        s.destino_lat,
+                        s.destino_lng,
+                        u.nombre as usuario_nombre,
+                        uc.nombre as conductor_nombre
+                    FROM servicios s
+                    LEFT JOIN usuarios u ON s.usuario_id = u.id
+                    LEFT JOIN conductores c ON s.conductor_id = c.id
+                    LEFT JOIN usuarios uc ON c.usuario_id = uc.id
+                    ORDER BY s.fecha_solicitud DESC
+                    """);
+            return ResponseEntity.ok(servicios);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(500).body(Map.of(
+                    "error", "Error al listar servicios",
+                    "details", e.getMessage()));
         }
     }
 }
