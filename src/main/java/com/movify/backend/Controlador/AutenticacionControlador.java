@@ -2,14 +2,17 @@ package com.movify.backend.Controlador;
 
 import com.movify.backend.Modelo.Usuario;
 import com.movify.backend.Base_de_datos.UsuarioRepositorio;
+import com.movify.backend.Servicio.AutenticacionServicio;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/auth")
@@ -18,6 +21,27 @@ public class AutenticacionControlador {
 
     @Autowired
     private UsuarioRepositorio usuarioRepositorio;
+
+    @Autowired
+    private AutenticacionServicio autenticacionServicio;
+
+    @Autowired
+    private JdbcTemplate db;
+
+    // =========================
+    // REGISTRO DE ADMIN
+    // =========================
+
+    @PostMapping("/registro-admin")
+    public ResponseEntity<?> registrarAdmin(
+            @RequestBody Map<String, String> data) {
+        try {
+            Usuario admin = autenticacionServicio.registrarAdmin(data);
+            return ResponseEntity.ok(Map.of("message", "Administrador registrado correctamente", "id", admin.getId()));
+        } catch (Exception e) {
+            return ResponseEntity.status(403).body(Map.of("error", e.getMessage()));
+        }
+    }
 
     // =========================
     // LOGIN NORMAL
@@ -45,9 +69,42 @@ public class AutenticacionControlador {
 
         Usuario usuario = usuarioOptional.get();
 
+        // VALIDAR ESTADO CONDUCTOR (PENDIENTE O RECHAZADO)
+        if ("conductor".equalsIgnoreCase(usuario.getRol())) {
+            try {
+                Map<String, Object> conductorInfo = db.queryForMap(
+                        "SELECT estado, motivo_rechazo FROM conductores WHERE usuario_id = ?",
+                        usuario.getId());
+                String estadoConductor = String.valueOf(conductorInfo.get("estado"));
+
+                if ("pendiente".equalsIgnoreCase(estadoConductor)) {
+                    return ResponseEntity.status(403).body(Map.of("error",
+                            "Tu cuenta de conductor está en proceso de revisión. Te notificaremos una vez que tus documentos sean aprobados."));
+                } else if ("rechazado".equalsIgnoreCase(estadoConductor)) {
+                    String motivo = conductorInfo.get("motivo_rechazo") != null
+                            ? conductorInfo.get("motivo_rechazo").toString()
+                            : "No especificado";
+                    return ResponseEntity.status(403).body(Map.of("error",
+                            "Tu solicitud de conductor fue rechazada. Motivo: " + motivo
+                                    + ". Por favor, corrige la información y vuelve a enviarla."));
+                }
+            } catch (Exception e) {
+                /* Ignorar si no existe registro */ }
+        }
+
+        // VALIDAR ESTADO
+        if (usuario.getEstado() != null && !usuario.getEstado().equalsIgnoreCase("activo")) {
+            return ResponseEntity
+                    .status(403)
+                    .body(Map.of(
+                            "error",
+                            "Tu cuenta se encuentra " + usuario.getEstado()
+                                    + ". Contacta al soporte para más información."));
+        }
+
         // VALIDAR PASSWORD
 
-        if (!usuario.getPassword().equals(password)) {
+        if (!autenticacionServicio.validarPassword(password, usuario.getPassword())) {
 
             return ResponseEntity
                     .badRequest()
@@ -87,6 +144,28 @@ public class AutenticacionControlador {
 
             usuario = usuarioExistente.get();
 
+            // VALIDAR ESTADO CONDUCTOR (PENDIENTE O RECHAZADO) - Google Login
+            if ("conductor".equalsIgnoreCase(usuario.getRol())) {
+                try {
+                    Map<String, Object> conductorInfo = db.queryForMap(
+                            "SELECT estado, motivo_rechazo FROM conductores WHERE usuario_id = ?",
+                            usuario.getId());
+                    String estadoConductor = String.valueOf(conductorInfo.get("estado"));
+
+                    if ("pendiente".equalsIgnoreCase(estadoConductor)) {
+                        return ResponseEntity.status(403).body(Map.of("error",
+                                "Tu cuenta de conductor está en proceso de revisión. Por favor espera la aprobación del administrador."));
+                    } else if ("rechazado".equalsIgnoreCase(estadoConductor)) {
+                        String motivo = conductorInfo.get("motivo_rechazo") != null
+                                ? conductorInfo.get("motivo_rechazo").toString()
+                                : "No especificado";
+                        return ResponseEntity.status(403).body(Map.of("error",
+                                "Tu solicitud de conductor fue rechazada. Motivo: " + motivo));
+                    }
+                } catch (Exception e) {
+                    /* Ignorar */ }
+            }
+
         } else {
 
             usuario = new Usuario();
@@ -107,5 +186,39 @@ public class AutenticacionControlador {
         response.put("foto", usuario.getFoto());
 
         return ResponseEntity.ok(response);
+    }
+
+    // =========================
+    // LISTAR TODOS LOS USUARIOS
+    // =========================
+    @GetMapping("/usuarios")
+    public ResponseEntity<?> listarUsuarios() {
+        try {
+            List<Usuario> usuarios = usuarioRepositorio.findAll();
+            // Mejora de seguridad: No exponer los hashes de las contraseñas en el listado
+            // público
+            usuarios.forEach(u -> u.setPassword(null));
+            return ResponseEntity.ok(usuarios);
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    // =========================
+    // CAMBIAR ESTADO DE USUARIO
+    // =========================
+    @PatchMapping("/usuarios/{id}/estado")
+    public ResponseEntity<?> cambiarEstadoUsuario(
+            @PathVariable Long id,
+            @RequestBody Map<String, String> data) {
+        try {
+            Usuario usuario = usuarioRepositorio.findById(id)
+                    .orElseThrow(() -> new RuntimeException("Usuario no encontrado"));
+            usuario.setEstado(data.get("estado"));
+            usuarioRepositorio.save(usuario);
+            return ResponseEntity.ok(Map.of("message", "Estado actualizado correctamente"));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
     }
 }

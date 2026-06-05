@@ -53,7 +53,7 @@ public class TransporteControlador {
                         c.en_linea
                     FROM conductores c
                     JOIN usuarios u ON c.usuario_id = u.id
-                    WHERE c.en_linea = true
+                    WHERE c.en_linea = true AND c.estado = 'aprobado'
                     """); // Cierre de la consulta SQL
             return ResponseEntity.ok(resultado);
         } catch (Exception e) {
@@ -1089,6 +1089,101 @@ public class TransporteControlador {
         } catch (Exception e) {
             return ResponseEntity.status(500)
                     .body(Map.of("error", "Error al procesar retiro", "details", e.getMessage()));
+        }
+    }
+
+    /**
+     * USUARIO: Obtiene el historial completo de servicios de un usuario.
+     */
+    @GetMapping("/servicios/usuario/{usuarioId}")
+    public ResponseEntity<?> getHistorialUsuario(@PathVariable("usuarioId") Long usuarioId) {
+        try {
+            List<Map<String, Object>> historial = db.queryForList("""
+                    SELECT * FROM servicios
+                    WHERE usuario_id = ?
+                    ORDER BY fecha_solicitud DESC
+                    """, usuarioId);
+            return ResponseEntity.ok(historial);
+        } catch (Exception e) {
+            return ResponseEntity.status(500)
+                    .body(Map.of("error", "Error al obtener historial", "details", e.getMessage()));
+        }
+    }
+
+    /**
+     * USUARIO: Obtiene el total gastado y la cantidad de viajes finalizados del mes
+     * actual.
+     */
+    @GetMapping("/servicios/usuario/{usuarioId}/mes-actual")
+    public ResponseEntity<?> getStatsMesActual(@PathVariable("usuarioId") Long usuarioId) {
+        try {
+            String sql = """
+                    SELECT
+                        COUNT(*) as total_servicios,
+                        COALESCE(SUM(tarifa), 0) as total_gasto
+                    FROM servicios
+                    WHERE usuario_id = ?
+                      AND estado = 'FINALIZADO'
+                      AND EXTRACT(MONTH FROM fecha_solicitud) = EXTRACT(MONTH FROM CURRENT_DATE)
+                      AND EXTRACT(YEAR FROM fecha_solicitud) = EXTRACT(YEAR FROM CURRENT_DATE)
+                    """;
+            Map<String, Object> stats = db.queryForMap(sql, usuarioId);
+            return ResponseEntity.ok(stats);
+        } catch (Exception e) {
+            return ResponseEntity.status(500)
+                    .body(Map.of("error", "Error al obtener estadísticas del mes", "details", e.getMessage()));
+        }
+    }
+
+    /**
+     * ADMIN: Obtiene la lista de todos los conductores para revisión.
+     */
+    @GetMapping("/admin/conductores")
+    public ResponseEntity<?> getTodosLosConductores() {
+        try {
+            List<Map<String, Object>> conductores = db.queryForList("""
+                    SELECT
+                        c.id as conductor_id,
+                        u.nombre,
+                        u.correo,
+                        u.telefono,
+                        c.placa,
+                        c.modelo,
+                        c.estado
+                    FROM conductores c
+                    JOIN usuarios u ON c.usuario_id = u.id
+                    ORDER BY c.id DESC
+                    """);
+            return ResponseEntity.ok(conductores);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(500).body(Map.of(
+                    "error", "Error al listar conductores",
+                    "details", String.valueOf(e.getMessage()),
+                    "cause", e.getCause() != null ? String.valueOf(e.getCause().getMessage()) : "sin causa"));
+        }
+    }
+
+    /**
+     * ADMIN: Aprueba o rechaza a un conductor.
+     */
+    @PatchMapping("/admin/conductor/{id}/estado")
+    public ResponseEntity<?> actualizarEstadoConductor(
+            @PathVariable("id") Long id,
+            @RequestBody Map<String, Object> body) {
+        try {
+            String nuevoEstado = body.get("estado").toString().toLowerCase();
+            String motivo = body.getOrDefault("motivo_rechazo", "").toString();
+            Long adminId = Long.parseLong(body.getOrDefault("admin_id", "0").toString());
+
+            db.update("""
+                    UPDATE conductores
+                    SET estado = ?, motivo_rechazo = ?, fecha_revision = NOW(), admin_id_revisor = ?
+                    WHERE id = ?
+                    """, nuevoEstado, motivo, adminId, id);
+            return ResponseEntity.ok(Map.of("message", "Estado del conductor actualizado a " + nuevoEstado));
+        } catch (Exception e) {
+            return ResponseEntity.status(400).body(Map.of("error", "Error al actualizar estado"));
         }
     }
 }

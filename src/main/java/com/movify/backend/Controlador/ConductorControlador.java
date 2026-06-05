@@ -21,7 +21,7 @@ import java.util.ArrayList;
 
 @RestController
 @RequestMapping("/api/conductor")
-@CrossOrigin("*")
+@CrossOrigin(origins = "${app.cors.allowed-origins}")
 
 public class ConductorControlador {
 
