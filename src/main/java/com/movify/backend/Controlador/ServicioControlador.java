@@ -15,7 +15,6 @@ import com.movify.backend.Modelo.Servicio;
 
 @RestController
 @RequestMapping("/api/servicios")
-@CrossOrigin(origins = "${app.cors.allowed-origins}")
 public class ServicioControlador {
 
     @Autowired

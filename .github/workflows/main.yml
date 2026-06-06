@@ -47,7 +47,7 @@ jobs:
 
             cd $PROJECT_PATH
 
-            # Configurar remote privado
+            # Configurar remote con PAT
             git remote set-url origin \
             https://wilsonsaa03:$GITHUB_PAT@github.com/wilsonsaa03/movify-backend.git
 
@@ -62,7 +62,7 @@ jobs:
             sudo systemctl stop movify || true
             sudo pkill -f 'java.*app\.jar' || true
             sleep 2
-            rm -rf /var/www/ds2/movify-api/target
+            rm -rf $PROJECT_PATH/target
 
             echo "========================================"
             echo " Compilando proyecto"
@@ -74,13 +74,15 @@ jobs:
             echo " Generando app.jar"
             echo "========================================"
 
-            cp target/*.jar app.jar
+            cp target/movify-backend-*.jar app.jar
 
             echo "========================================"
             echo " Reiniciando servicio"
             echo "========================================"
 
             sudo systemctl start movify
+            sleep 5
+            sudo systemctl status movify --no-pager
 
             echo "========================================"
             echo " Deploy completado"
