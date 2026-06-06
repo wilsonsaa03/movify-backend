@@ -55,6 +55,12 @@ jobs:
             git reset --hard origin/main
 
             echo "========================================"
+            echo " Deteniendo servicio"
+            echo "========================================"
+
+            sudo systemctl stop movify || true
+
+            echo "========================================"
             echo " Compilando proyecto"
             echo "========================================"
 
@@ -70,7 +76,7 @@ jobs:
             echo " Reiniciando servicio"
             echo "========================================"
 
-            sudo systemctl restart movify
+            sudo systemctl start movify
 
             echo "========================================"
             echo " Deploy completado"
