@@ -25,7 +25,6 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
-          command_timeout: 15m
 
           envs: GITHUB_PAT
 
@@ -47,22 +46,13 @@ jobs:
 
             cd $PROJECT_PATH
 
-            # Configurar remote con PAT
+            # Configurar remote privado
             git remote set-url origin \
             https://wilsonsaa03:$GITHUB_PAT@github.com/wilsonsaa03/movify-backend.git
 
             # Actualizar código
             git fetch origin
             git reset --hard origin/main
-
-            echo "========================================"
-            echo " Deteniendo servicio"
-            echo "========================================"
-
-            sudo systemctl stop movify || true
-            sudo pkill -f 'java.*app\.jar' || true
-            sleep 2
-            rm -rf $PROJECT_PATH/target
 
             echo "========================================"
             echo " Compilando proyecto"
@@ -74,15 +64,13 @@ jobs:
             echo " Generando app.jar"
             echo "========================================"
 
-            cp target/movify-backend-*.jar app.jar
+            cp target/*.jar app.jar
 
             echo "========================================"
             echo " Reiniciando servicio"
             echo "========================================"
 
-            sudo systemctl start movify
-            sleep 5
-            sudo systemctl status movify --no-pager
+            sudo systemctl restart movify
 
             echo "========================================"
             echo " Deploy completado"
