@@ -59,7 +59,7 @@ jobs:
             echo "========================================"
 
             sudo systemctl stop movify || true
-            sudo pkill -f 'movify-backend' || true
+            sudo pkill -f 'java.*app\.jar' || true
             sleep 2
             rm -rf /var/www/ds2/movify-api/target
 
