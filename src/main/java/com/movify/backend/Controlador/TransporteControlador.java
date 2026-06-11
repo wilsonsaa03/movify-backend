@@ -28,7 +28,6 @@ import com.movify.backend.Modelo.Servicio;
 
 @RestController
 @RequestMapping("/api/transporte")
-@CrossOrigin(origins = "${app.cors.allowed-origins}")
 public class TransporteControlador {
     // Recomendación: Inyectar una capa de servicio (TransporteService) en lugar de
     // JdbcTemplate directamente
