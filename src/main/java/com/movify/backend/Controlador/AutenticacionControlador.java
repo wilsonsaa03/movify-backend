@@ -17,7 +17,6 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/auth")
-@CrossOrigin(origins = "${app.cors.allowed-origins}")
 public class AutenticacionControlador {
 
     @Autowired
@@ -29,11 +28,49 @@ public class AutenticacionControlador {
     @Autowired
     private JdbcTemplate db;
 
-    @GetMapping("/generar-hash")
-    public ResponseEntity<?> generarHash() {
-        BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
-        String hash = encoder.encode("123456");
-        return ResponseEntity.ok(Map.of("hash", hash));
+    // =========================
+    // REGISTRO DE USUARIO
+    // =========================
+
+    @PostMapping("/registro")
+    public ResponseEntity<?> registrarUsuario(@RequestBody Map<String, String> data) {
+        try {
+            String correo   = data.get("correo");
+            String nombre   = data.get("nombre");
+            String password = data.get("password");
+            String telefono = data.get("telefono");
+
+            if (correo == null || nombre == null || password == null) {
+                return ResponseEntity.badRequest()
+                        .body(Map.of("error", "Nombre, correo y contraseña son obligatorios."));
+            }
+
+            if (usuarioRepositorio.existsByCorreo(correo)) {
+                return ResponseEntity.badRequest()
+                        .body(Map.of("error", "El correo ya está registrado."));
+            }
+
+            BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
+
+            Usuario usuario = new Usuario();
+            usuario.setNombre(nombre);
+            usuario.setCorreo(correo);
+            usuario.setPassword(encoder.encode(password));
+            usuario.setTelefono(telefono);
+            usuario.setRol("usuario");
+            usuario.setEstado("activo");
+
+            Usuario guardado = usuarioRepositorio.save(usuario);
+
+            return ResponseEntity.ok(Map.of(
+                    "message", "Usuario registrado correctamente",
+                    "id",      guardado.getId(),
+                    "rol",     guardado.getRol()
+            ));
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("error", "Error al registrar usuario: " + e.getMessage()));
+        }
     }
 
     // =========================
@@ -41,11 +78,13 @@ public class AutenticacionControlador {
     // =========================
 
     @PostMapping("/registro-admin")
-    public ResponseEntity<?> registrarAdmin(
-            @RequestBody Map<String, String> data) {
+    public ResponseEntity<?> registrarAdmin(@RequestBody Map<String, String> data) {
         try {
             Usuario admin = autenticacionServicio.registrarAdmin(data);
-            return ResponseEntity.ok(Map.of("message", "Administrador registrado correctamente", "id", admin.getId()));
+            return ResponseEntity.ok(Map.of(
+                    "message", "Administrador registrado correctamente",
+                    "id",      admin.getId()
+            ));
         } catch (Exception e) {
             return ResponseEntity.status(403).body(Map.of("error", e.getMessage()));
         }
@@ -56,33 +95,18 @@ public class AutenticacionControlador {
     // =========================
 
     @PostMapping("/login")
-    public ResponseEntity<?> login(
-            @RequestBody Map<String, String> data) {
+    public ResponseEntity<?> login(@RequestBody Map<String, String> data) {
 
-        String correo = data.get("correo");
+        String correo   = data.get("correo");
         String password = data.get("password");
-
-        System.out.println("🔑 Intento login - Correo: " + correo + " | Password: " + password);
 
         Optional<Usuario> usuarioOptional = usuarioRepositorio.findByCorreo(correo);
 
-        // VALIDAR USUARIO
-
         if (usuarioOptional.isEmpty()) {
-
-            System.out.println("❌ Usuario no encontrado");
-            return ResponseEntity
-                    .badRequest()
-                    .body(Map.of(
-                            "error",
-                            "Correo no encontrado"));
+            return ResponseEntity.badRequest().body(Map.of("error", "Correo no encontrado"));
         }
 
         Usuario usuario = usuarioOptional.get();
-
-        System.out.println("✅ Usuario encontrado: " + usuario.getNombre() + " | Estado: " + usuario.getEstado());
-        System.out.println("🔐 Hash en BD: " + usuario.getPassword());
-        System.out.println("🔐 Match: " + autenticacionServicio.validarPassword(password, usuario.getPassword()));
 
         // VALIDAR ESTADO CONDUCTOR (PENDIENTE O RECHAZADO)
         if ("conductor".equalsIgnoreCase(usuario.getRol())) {
@@ -104,40 +128,29 @@ public class AutenticacionControlador {
                                     + ". Por favor, corrige la información y vuelve a enviarla."));
                 }
             } catch (Exception e) {
-                /* Ignorar si no existe registro */ }
+                /* Ignorar si no existe registro */
+            }
         }
 
         // VALIDAR ESTADO
         if (usuario.getEstado() != null && !usuario.getEstado().equalsIgnoreCase("activo")) {
-            return ResponseEntity
-                    .status(403)
-                    .body(Map.of(
-                            "error",
-                            "Tu cuenta se encuentra " + usuario.getEstado()
-                                    + ". Contacta al soporte para más información."));
+            return ResponseEntity.status(403).body(Map.of(
+                    "error", "Tu cuenta se encuentra " + usuario.getEstado()
+                            + ". Contacta al soporte para más información."));
         }
 
         // VALIDAR PASSWORD
-
         if (!autenticacionServicio.validarPassword(password, usuario.getPassword())) {
-
-            System.out.println("❌ Password no coincide. Plana: " + password + " | Hash: " + usuario.getPassword());
-            return ResponseEntity
-                    .badRequest()
-                    .body(Map.of(
-                            "error",
-                            "Contraseña incorrecta"));
+            return ResponseEntity.badRequest().body(Map.of("error", "Contraseña incorrecta"));
         }
 
         // RESPUESTA
-
         Map<String, Object> response = new HashMap<>();
-
         response.put("token", "login-exitoso");
-        response.put("id", usuario.getId());
-        response.put("rol", usuario.getRol());
+        response.put("id",    usuario.getId());
+        response.put("rol",   usuario.getRol());
         response.put("nombre", usuario.getNombre());
-        response.put("foto", usuario.getFoto());
+        response.put("foto",  usuario.getFoto());
 
         return ResponseEntity.ok(response);
     }
@@ -147,8 +160,7 @@ public class AutenticacionControlador {
     // =========================
 
     @PostMapping("/login-google")
-    public ResponseEntity<?> loginGoogle(
-            @RequestBody Map<String, String> data) {
+    public ResponseEntity<?> loginGoogle(@RequestBody Map<String, String> data) {
 
         String correo = data.get("correo");
 
@@ -157,10 +169,8 @@ public class AutenticacionControlador {
         Usuario usuario;
 
         if (usuarioExistente.isPresent()) {
-
             usuario = usuarioExistente.get();
 
-            // VALIDAR ESTADO CONDUCTOR (PENDIENTE O RECHAZADO) - Google Login
             if ("conductor".equalsIgnoreCase(usuario.getRol())) {
                 try {
                     Map<String, Object> conductorInfo = db.queryForMap(
@@ -179,27 +189,24 @@ public class AutenticacionControlador {
                                 "Tu solicitud de conductor fue rechazada. Motivo: " + motivo));
                     }
                 } catch (Exception e) {
-                    /* Ignorar */ }
+                    /* Ignorar */
+                }
             }
-
         } else {
-
             usuario = new Usuario();
-
             usuario.setNombre(data.get("nombre"));
             usuario.setCorreo(correo);
             usuario.setFoto(data.get("foto"));
             usuario.setRol("usuario");
-
+            usuario.setEstado("activo");
             usuarioRepositorio.save(usuario);
         }
 
         Map<String, Object> response = new HashMap<>();
-
         response.put("token", "google-login");
-        response.put("rol", usuario.getRol());
+        response.put("rol",   usuario.getRol());
         response.put("nombre", usuario.getNombre());
-        response.put("foto", usuario.getFoto());
+        response.put("foto",  usuario.getFoto());
 
         return ResponseEntity.ok(response);
     }
@@ -207,12 +214,11 @@ public class AutenticacionControlador {
     // =========================
     // LISTAR TODOS LOS USUARIOS
     // =========================
+
     @GetMapping("/usuarios")
     public ResponseEntity<?> listarUsuarios() {
         try {
             List<Usuario> usuarios = usuarioRepositorio.findAll();
-            // Mejora de seguridad: No exponer los hashes de las contraseñas en el listado
-            // público
             usuarios.forEach(u -> u.setPassword(null));
             return ResponseEntity.ok(usuarios);
         } catch (Exception e) {
@@ -223,6 +229,7 @@ public class AutenticacionControlador {
     // =========================
     // CAMBIAR ESTADO DE USUARIO
     // =========================
+
     @PatchMapping("/usuarios/{id}/estado")
     public ResponseEntity<?> cambiarEstadoUsuario(
             @PathVariable Long id,
