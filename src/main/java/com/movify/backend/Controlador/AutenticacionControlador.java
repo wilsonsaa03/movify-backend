@@ -35,8 +35,8 @@ public class AutenticacionControlador {
     @PostMapping("/registro")
     public ResponseEntity<?> registrarUsuario(@RequestBody Map<String, String> data) {
         try {
-            String correo   = data.get("correo");
-            String nombre   = data.get("nombre");
+            String correo = data.get("correo");
+            String nombre = data.get("nombre");
             String password = data.get("password");
             String telefono = data.get("telefono");
 
@@ -64,9 +64,8 @@ public class AutenticacionControlador {
 
             return ResponseEntity.ok(Map.of(
                     "message", "Usuario registrado correctamente",
-                    "id",      guardado.getId(),
-                    "rol",     guardado.getRol()
-            ));
+                    "id", guardado.getId(),
+                    "rol", guardado.getRol()));
         } catch (Exception e) {
             return ResponseEntity.internalServerError()
                     .body(Map.of("error", "Error al registrar usuario: " + e.getMessage()));
@@ -83,8 +82,7 @@ public class AutenticacionControlador {
             Usuario admin = autenticacionServicio.registrarAdmin(data);
             return ResponseEntity.ok(Map.of(
                     "message", "Administrador registrado correctamente",
-                    "id",      admin.getId()
-            ));
+                    "id", admin.getId()));
         } catch (Exception e) {
             return ResponseEntity.status(403).body(Map.of("error", e.getMessage()));
         }
@@ -97,7 +95,7 @@ public class AutenticacionControlador {
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody Map<String, String> data) {
 
-        String correo   = data.get("correo");
+        String correo = data.get("correo");
         String password = data.get("password");
 
         Optional<Usuario> usuarioOptional = usuarioRepositorio.findByCorreo(correo);
@@ -147,10 +145,10 @@ public class AutenticacionControlador {
         // RESPUESTA
         Map<String, Object> response = new HashMap<>();
         response.put("token", "login-exitoso");
-        response.put("id",    usuario.getId());
-        response.put("rol",   usuario.getRol());
+        response.put("id", usuario.getId());
+        response.put("rol", usuario.getRol());
         response.put("nombre", usuario.getNombre());
-        response.put("foto",  usuario.getFoto());
+        response.put("foto", usuario.getFoto());
 
         return ResponseEntity.ok(response);
     }
@@ -204,9 +202,9 @@ public class AutenticacionControlador {
 
         Map<String, Object> response = new HashMap<>();
         response.put("token", "google-login");
-        response.put("rol",   usuario.getRol());
+        response.put("rol", usuario.getRol());
         response.put("nombre", usuario.getNombre());
-        response.put("foto",  usuario.getFoto());
+        response.put("foto", usuario.getFoto());
 
         return ResponseEntity.ok(response);
     }
