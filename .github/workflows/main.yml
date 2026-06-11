@@ -1,25 +1,25 @@
 name: 🚀 Deploy Movify Backend
-
+ 
 on:
   push:
     branches:
       - main
-
+ 
 jobs:
   deploy:
     name: Deploy Spring Boot
     runs-on: ubuntu-latest
-
+ 
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
-
+ 
       - name: 🚀 Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
-
+ 
         env:
           GITHUB_PAT: ${{ secrets.GH_PAT }}
-
+ 
         with:
           host:     ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -27,57 +27,57 @@ jobs:
           port:     ${{ secrets.VPS_PORT }}
           envs:     GITHUB_PAT
           command_timeout: 10m
-
+ 
           script: |
             set -e
-
+ 
             echo "========================================"
             echo " Deploy Movify Backend — $(date)"
             echo "========================================"
-
+ 
             PROJECT_PATH="/var/www/ds2/movify-api"
-
-            # ── Clonar si no existe ──────────────────
+ 
+            # Clonar si no existe
             if [ ! -d "$PROJECT_PATH/.git" ]; then
               git clone \
                 https://wilsonsaa03:$GITHUB_PAT@github.com/wilsonsaa03/movify-backend.git \
                 $PROJECT_PATH
             fi
-
+ 
             cd $PROJECT_PATH
-
+ 
             git remote set-url origin \
               https://wilsonsaa03:$GITHUB_PAT@github.com/wilsonsaa03/movify-backend.git
-
+ 
             git fetch origin
             git reset --hard origin/main
-
-            # ── PARAR SERVICIO ANTES DE COMPILAR ─────
-            # (Maven no puede borrar target/ si el JVM tiene los archivos abiertos)
-            echo "⏹  Parando servicio..."
+ 
+            # Parar servicio ANTES de compilar
+            echo "Parando servicio..."
             sudo systemctl stop movify || true
             sleep 2
-
-            # ── Compilar ─────────────────────────────
+            rm -rf /var/www/ds2/movify-api/target || true
+ 
+            # Compilar
             echo "========================================"
             echo " Compilando proyecto"
             echo "========================================"
             mvn clean package -DskipTests
-
-            # ── Reemplazar JAR ────────────────────────
+ 
+            # Reemplazar JAR
             echo "========================================"
             echo " Generando app.jar"
             echo "========================================"
             cp target/*.jar app.jar
-
-            # ── Iniciar servicio ──────────────────────
+ 
+            # Iniciar servicio
             echo "========================================"
             echo " Iniciando servicio"
             echo "========================================"
             sudo systemctl start movify
-
-            # ── Healthcheck (espera hasta 30s) ────────
-            echo "🏥 Healthcheck..."
+ 
+            # Healthcheck
+            echo "Healthcheck..."
             for i in $(seq 1 10); do
               sleep 3
               STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -85,18 +85,19 @@ jobs:
                        -X POST -H "Content-Type: application/json" \
                        -d '{"correo":"test","password":"test"}' || echo "000")
               if [ "$STATUS" != "000" ]; then
-                echo "✅ Backend respondiendo (HTTP $STATUS)"
+                echo "Backend respondiendo (HTTP $STATUS)"
                 break
               fi
               echo "   Intento $i/10..."
             done
-
+ 
             if [ "$STATUS" = "000" ]; then
-              echo "❌ Backend no responde después de 30s"
+              echo "Backend no responde despues de 30s"
               sudo journalctl -u movify -n 50 --no-pager
               exit 1
             fi
-
+ 
             echo "========================================"
-            echo " ✅ Deploy completado"
+            echo " Deploy completado"
             echo "========================================"
+ 
