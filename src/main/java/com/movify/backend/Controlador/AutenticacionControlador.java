@@ -197,6 +197,9 @@ public class AutenticacionControlador {
             usuario.setFoto(data.get("foto"));
             usuario.setRol("usuario");
             usuario.setEstado("activo");
+            // Generar una contraseña aleatoria para cumplir con la restricción @NotBlank de la BD
+            String randomPass = java.util.UUID.randomUUID().toString();
+            usuario.setPassword(new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode(randomPass));
             usuarioRepositorio.save(usuario);
         }
 
