@@ -12,7 +12,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity; // For atomicity
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -1229,6 +1228,221 @@ public class TransporteControlador {
             return ResponseEntity.status(500).body(Map.of(
                     "error", "Error al listar servicios",
                     "details", e.getMessage()));
+        }
+    }
+
+    /**
+     * CONDUCTOR: Stats en tiempo real para la pantalla Mis Viajes.
+     * GET /api/transporte/stats-conductor/{conductorId}
+     */
+    @GetMapping("/stats-conductor/{conductorId}")
+    public ResponseEntity<?> getStatsConductor(@PathVariable("conductorId") Long conductorId) {
+        try {
+            // Viajes de hoy y ganancias de hoy
+            Map<String, Object> hoy = db.queryForMap("""
+                    SELECT
+                        COUNT(*) FILTER (WHERE estado = 'FINALIZADO') AS viajes_hoy,
+                        COALESCE(SUM(tarifa) FILTER (WHERE estado = 'FINALIZADO'), 0) AS ganancias_hoy
+                    FROM servicios
+                    WHERE conductor_id = ?
+                      AND fecha_solicitud::date = CURRENT_DATE
+                    """, conductorId);
+
+            // Viajes de ayer (para tendencia)
+            Map<String, Object> ayer = db.queryForMap("""
+                    SELECT
+                        COUNT(*) FILTER (WHERE estado = 'FINALIZADO') AS viajes_ayer,
+                        COALESCE(SUM(tarifa) FILTER (WHERE estado = 'FINALIZADO'), 0) AS ganancias_ayer
+                    FROM servicios
+                    WHERE conductor_id = ?
+                      AND fecha_solicitud::date = CURRENT_DATE - 1
+                    """, conductorId);
+
+            // Viajes activos en este momento
+            Long activos = db.queryForObject("""
+                    SELECT COUNT(*) FROM servicios
+                    WHERE conductor_id = ?
+                      AND estado IN ('EN_VIAJE','ACEPTADO','EN_CAMINO',
+                                     'EN_CAMINO_AL_USUARIO','LLEGO_AL_ORIGEN','PAQUETE_RECOGIDO')
+                    """, Long.class, conductorId);
+
+            // Total viajes finalizados histórico
+            Long totalViajes = db.queryForObject("""
+                    SELECT COUNT(*) FROM servicios
+                    WHERE conductor_id = ? AND estado = 'FINALIZADO'
+                    """, Long.class, conductorId);
+
+            // Calcular tendencias
+            long vHoy  = ((Number) hoy.get("viajes_hoy")).longValue();
+            long vAyer = ((Number) ayer.get("viajes_ayer")).longValue();
+            double gHoy  = ((Number) hoy.get("ganancias_hoy")).doubleValue();
+            double gAyer = ((Number) ayer.get("ganancias_ayer")).doubleValue();
+
+            long tendenciaHoy      = vHoy - vAyer;
+            double tendenciaGanancia = gAyer > 0
+                    ? Math.round(((gHoy - gAyer) / gAyer) * 100.0)
+                    : 0;
+
+            java.util.Map<String, Object> resp = new java.util.HashMap<>();
+            resp.put("viajes_hoy",          vHoy);
+            resp.put("ganancias_hoy",        gHoy);
+            resp.put("activos",              activos != null ? activos : 0);
+            resp.put("total_viajes",         totalViajes != null ? totalViajes : 0);
+            resp.put("tendencia_hoy",        tendenciaHoy);
+            resp.put("tendencia_ganancia",   tendenciaGanancia);
+
+            return ResponseEntity.ok(resp);
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(500)
+                    .body(Map.of("error", "Error al obtener stats", "details", e.getMessage()));
+        }
+    }
+
+    /**
+     * CONDUCTOR: Historial paginado con filtros para la pantalla Mis Viajes.
+     * GET /api/transporte/historial-conductor/{conductorId}
+     *     ?filtro=todos&busqueda=&pagina=1&limite=10
+     */
+    @GetMapping("/historial-conductor/{conductorId}")
+    public ResponseEntity<?> getHistorialConductor(
+            @PathVariable("conductorId") Long conductorId,
+            @org.springframework.web.bind.annotation.RequestParam(defaultValue = "todos") String filtro,
+            @org.springframework.web.bind.annotation.RequestParam(defaultValue = "")      String busqueda,
+            @org.springframework.web.bind.annotation.RequestParam(defaultValue = "1")     int    pagina,
+            @org.springframework.web.bind.annotation.RequestParam(defaultValue = "10")    int    limite) {
+        try {
+            // Condición de fecha según filtro
+            String condFecha = switch (filtro) {
+                case "hoy"    -> "AND s.fecha_solicitud::date = CURRENT_DATE";
+                case "semana" -> "AND s.fecha_solicitud >= NOW() - INTERVAL '7 days'";
+                case "mes"    -> "AND s.fecha_solicitud >= NOW() - INTERVAL '30 days'";
+                default       -> ""; // todos
+            };
+
+            // Condición de búsqueda por dirección o nombre de usuario
+            String condBusqueda = "";
+            if (busqueda != null && !busqueda.isBlank()) {
+                condBusqueda = """
+                        AND (
+                            LOWER(s.origen_direccion)  LIKE LOWER('%%%s%%')
+                         OR LOWER(s.destino_direccion) LIKE LOWER('%%%s%%')
+                         OR LOWER(u.nombre)            LIKE LOWER('%%%s%%')
+                        )
+                        """.formatted(busqueda, busqueda, busqueda);
+            }
+
+            // Total de registros (para paginación)
+            String sqlCount = """
+                    SELECT COUNT(*)
+                    FROM servicios s
+                    LEFT JOIN usuarios u ON s.usuario_id = u.id
+                    WHERE s.conductor_id = ?
+                    """ + condFecha + condBusqueda;
+
+            Long total = db.queryForObject(sqlCount, Long.class, conductorId);
+            if (total == null) total = 0L;
+
+            int totalPaginas = (int) Math.ceil((double) total / limite);
+            if (totalPaginas == 0) totalPaginas = 1;
+            int offset = (pagina - 1) * limite;
+
+            // Consulta principal
+            String sqlViajes = """
+                    SELECT
+                        s.id                                              AS servicio_id,
+                        s.estado,
+                        TO_CHAR(s.fecha_solicitud, 'YYYY-MM-DD"T"HH24:MI:SS') AS fecha_solicitud,
+                        s.origen_lat,
+                        s.origen_lng,
+                        s.destino_lat,
+                        s.destino_lng,
+                        COALESCE(s.origen_direccion,  '')                AS origen_direccion,
+                        COALESCE(s.origen_ciudad,     'Buenaventura')    AS origen_ciudad,
+                        COALESCE(s.destino_direccion, '')                AS destino_direccion,
+                        COALESCE(s.destino_ciudad,    'Buenaventura')    AS destino_ciudad,
+                        COALESCE(s.distancia_km,      0)                 AS distancia_km,
+                        COALESCE(s.duracion_min,      0)                 AS duracion_min,
+                        COALESCE(s.tarifa,            0)                 AS tarifa,
+                        COALESCE(s.metodo_pago,       'Efectivo')        AS metodo_pago,
+                        COALESCE(u.nombre,            'Cliente')         AS usuario_nombre,
+                        COALESCE(s.tipo,              'TRANSPORTE')      AS tipo,
+                        s.descripcion                                     AS razon_cancelacion
+                    FROM servicios s
+                    LEFT JOIN usuarios u ON s.usuario_id = u.id
+                    WHERE s.conductor_id = ?
+                    """ + condFecha + condBusqueda + """
+                    ORDER BY s.fecha_solicitud DESC
+                    LIMIT ? OFFSET ?
+                    """;
+
+            List<Map<String, Object>> viajes = db.queryForList(
+                    sqlViajes, conductorId, limite, offset);
+
+            java.util.Map<String, Object> resp = new java.util.HashMap<>();
+            resp.put("viajes",        viajes);
+            resp.put("total",         total);
+            resp.put("total_paginas", totalPaginas);
+            resp.put("pagina_actual", pagina);
+
+            return ResponseEntity.ok(resp);
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(500)
+                    .body(Map.of("error", "Error al obtener historial", "details", e.getMessage()));
+        }
+    }
+
+    /**
+     * CONDUCTOR: Exportar ganancias como CSV.
+     * GET /api/transporte/exportar-ganancias/{conductorId}
+     */
+    @GetMapping("/exportar-ganancias/{conductorId}")
+    public ResponseEntity<byte[]> exportarGanancias(@PathVariable("conductorId") Long conductorId) {
+        try {
+            List<Map<String, Object>> viajes = db.queryForList("""
+                    SELECT
+                        s.id,
+                        TO_CHAR(s.fecha_solicitud, 'DD/MM/YYYY HH24:MI') AS fecha,
+                        s.estado,
+                        COALESCE(s.origen_direccion,  '') AS origen,
+                        COALESCE(s.destino_direccion, '') AS destino,
+                        COALESCE(s.distancia_km, 0)       AS distancia_km,
+                        COALESCE(s.duracion_min, 0)        AS duracion_min,
+                        COALESCE(s.tarifa, 0)              AS tarifa,
+                        COALESCE(s.metodo_pago, 'Efectivo') AS metodo_pago
+                    FROM servicios s
+                    WHERE conductor_id = ? AND s.estado = 'FINALIZADO'
+                    ORDER BY s.fecha_solicitud DESC
+                    """, conductorId);
+
+            StringBuilder csv = new StringBuilder();
+            csv.append("ID,Fecha,Estado,Origen,Destino,Distancia(km),Duracion(min),Tarifa,Metodo pago\n");
+            for (Map<String, Object> v : viajes) {
+                csv.append(String.format("%s,%s,%s,\"%s\",\"%s\",%s,%s,%s,%s\n",
+                        v.get("id"),
+                        v.get("fecha"),
+                        v.get("estado"),
+                        v.get("origen"),
+                        v.get("destino"),
+                        v.get("distancia_km"),
+                        v.get("duracion_min"),
+                        v.get("tarifa"),
+                        v.get("metodo_pago")));
+            }
+
+            byte[] bytes = csv.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            return ResponseEntity.ok()
+                    .header("Content-Type", "text/csv; charset=UTF-8")
+                    .header("Content-Disposition",
+                            "attachment; filename=\"ganancias-" + conductorId + ".csv\"")
+                    .body(bytes);
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(500).body(null);
         }
     }
 }
