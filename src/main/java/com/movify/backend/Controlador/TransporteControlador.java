@@ -957,8 +957,8 @@ public class TransporteControlador {
                         'Pago'                                          AS tipo,
                         'Viaje completado'                             AS titulo,
                     CASE
-                        WHEN s.origen_direccion IS NOT NULL AND s.origen_direccion != ''
-                        THEN CONCAT(s.origen_direccion, ' → ', s.destino_direccion)
+                        WHEN s.origen IS NOT NULL AND s.origen != ''
+                        THEN CONCAT(s.origen, ' → ', s.destino)
                         ELSE CONCAT(
                             TRUNC(s.origen_lat::numeric, 4), ', ', TRUNC(s.origen_lng::numeric, 4),
                             ' → ',
@@ -1326,9 +1326,9 @@ public class TransporteControlador {
             if (busqueda != null && !busqueda.isBlank()) {
                 condBusqueda = """
                         AND (
-                            LOWER(s.origen_direccion)  LIKE LOWER('%%%s%%')
-                         OR LOWER(s.destino_direccion) LIKE LOWER('%%%s%%')
-                         OR LOWER(u.nombre)            LIKE LOWER('%%%s%%')
+                            LOWER(s.origen)  LIKE LOWER('%%%s%%')
+                         OR LOWER(s.destino) LIKE LOWER('%%%s%%')
+                         OR LOWER(u.nombre)  LIKE LOWER('%%%s%%')
                         )
                         """.formatted(busqueda, busqueda, busqueda);
             }
@@ -1358,12 +1358,12 @@ public class TransporteControlador {
                         s.origen_lng,
                         s.destino_lat,
                         s.destino_lng,
-                        COALESCE(s.origen_direccion,  '')                AS origen_direccion,
-                        COALESCE(s.origen_ciudad,     'Buenaventura')    AS origen_ciudad,
-                        COALESCE(s.destino_direccion, '')                AS destino_direccion,
-                        COALESCE(s.destino_ciudad,    'Buenaventura')    AS destino_ciudad,
-                        COALESCE(s.distancia_km,      0)                 AS distancia_km,
-                        COALESCE(s.duracion_min,      0)                 AS duracion_min,
+                        COALESCE(s.origen,  'Origen del servicio')       AS origen_direccion,
+                        'Buenaventura'                                    AS origen_ciudad,
+                        COALESCE(s.destino, 'Destino del cliente')       AS destino_direccion,
+                        'Buenaventura'                                    AS destino_ciudad,
+                        COALESCE(s.distancia_km, 0)                      AS distancia_km,
+                        0                                                 AS duracion_min,
                         COALESCE(s.tarifa,            0)                 AS tarifa,
                         COALESCE(s.metodo_pago,       'Efectivo')        AS metodo_pago,
                         COALESCE(u.nombre,            'Cliente')         AS usuario_nombre,
@@ -1407,10 +1407,10 @@ public class TransporteControlador {
                         s.id,
                         TO_CHAR(s.fecha_solicitud, 'DD/MM/YYYY HH24:MI') AS fecha,
                         s.estado,
-                        COALESCE(s.origen_direccion,  '') AS origen,
-                        COALESCE(s.destino_direccion, '') AS destino,
-                        COALESCE(s.distancia_km, 0)       AS distancia_km,
-                        COALESCE(s.duracion_min, 0)        AS duracion_min,
+                        COALESCE(s.origen,  '') AS origen,
+                        COALESCE(s.destino, '') AS destino,
+                        COALESCE(s.distancia_km, 0) AS distancia_km,
+                        0                           AS duracion_min,
                         COALESCE(s.tarifa, 0)              AS tarifa,
                         COALESCE(s.metodo_pago, 'Efectivo') AS metodo_pago
                     FROM servicios s
