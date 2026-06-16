@@ -111,6 +111,13 @@ public class TransporteControlador {
         try {
             System.out.println("📩 Datos recibidos en /solicitar: " + solicitud);
 
+            // Validar campos obligatorios antes de parsear
+            if (solicitud.get("destino_lat") == null || solicitud.get("destino_lng") == null) {
+                return ResponseEntity.badRequest().body(Map.of(
+                    "error", "Destino no seleccionado",
+                    "details", "Debes seleccionar un punto de destino en el mapa"
+                ));
+            }
             // Validar y extraer datos de la solicitud
             Long usuarioId = Long.parseLong(solicitud.get("usuario_id").toString());
             Double origenLat = Double.parseDouble(solicitud.get("origen_lat").toString());
@@ -159,8 +166,14 @@ public class TransporteControlador {
                                 FROM conductores
                                 WHERE en_linea = true
                                 AND ST_DWithin(
-                                    ST_SetSRID(ST_MakePoint(longitud::double precision, latitud::double precision), 4326)::geography,
-                                    ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography,
+                                    ST_SetSRID(ST_MakePoint(
+                                        CAST(longitud AS double precision),
+                                        CAST(latitud AS double precision)
+                                    ), 4326)::geography,
+                                    ST_SetSRID(ST_MakePoint(
+                                        CAST(? AS double precision),
+                                        CAST(? AS double precision)
+                                    ), 4326)::geography,
                                     5000)
                             """,
                     origenLng, origenLat);
