@@ -8,6 +8,7 @@ import com.movify.backend.Modelo.Usuario;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -107,13 +108,16 @@ public class ConductorControlador {
                         // CREAR USUARIO
                         // =========================
 
+                        BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
+
                         Usuario usuario = new Usuario();
 
                         usuario.setNombre(nombre);
                         usuario.setCorreo(correo);
                         usuario.setTelefono(telefono);
-                        usuario.setPassword(password);
+                        usuario.setPassword(encoder.encode(password));
                         usuario.setRol("conductor");
+                        usuario.setEstado("activo");
 
                         usuarioRepositorio.save(usuario);
 
