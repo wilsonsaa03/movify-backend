@@ -1186,9 +1186,17 @@ public class TransporteControlador {
             String nuevoEstado = body.get("estado").toString().toLowerCase();
             String motivo = body.getOrDefault("motivo_rechazo", "").toString();
 
-            // Solo actualiza campos que seguro existen
-            db.update("UPDATE conductores SET estado = ?, motivo_rechazo = ? WHERE id = ?",
-                    nuevoEstado, motivo, id);
+            // Intentamos guardar también el motivo de rechazo (columna puede no existir aún)
+            try {
+                db.update("UPDATE conductores SET estado = ?, motivo_rechazo = ? WHERE id = ?",
+                        nuevoEstado, motivo, id);
+            } catch (Exception exColumna) {
+                // Fallback: si motivo_rechazo no existe todavía en la BD,
+                // actualizamos solo el estado para no romper la aprobación/rechazo
+                System.err.println("⚠️ No se pudo guardar motivo_rechazo (columna puede no existir): "
+                        + exColumna.getMessage());
+                db.update("UPDATE conductores SET estado = ? WHERE id = ?", nuevoEstado, id);
+            }
 
             return ResponseEntity.ok(Map.of("message", "Estado del conductor actualizado a " + nuevoEstado));
         } catch (Exception e) {
