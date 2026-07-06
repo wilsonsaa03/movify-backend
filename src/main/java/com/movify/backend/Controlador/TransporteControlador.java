@@ -1176,6 +1176,48 @@ public class TransporteControlador {
     }
 
     /**
+     * ADMIN: Obtiene el detalle completo de un conductor (datos + documentos)
+     * para revisión antes de aprobar/rechazar.
+     */
+    @GetMapping("/admin/conductor/{id}/detalle")
+    public ResponseEntity<?> getDetalleConductor(@PathVariable("id") Long id) {
+        try {
+            Map<String, Object> conductor = db.queryForMap("""
+                    SELECT
+                        c.id as conductor_id,
+                        u.nombre,
+                        u.correo,
+                        u.telefono,
+                        c.placa,
+                        c.modelo,
+                        c.estado,
+                        c.licencia,
+                        c.soat,
+                        c.tarjeta_propiedad,
+                        c.cedula,
+                        c.fecha_verificacion
+                    FROM conductores c
+                    JOIN usuarios u ON c.usuario_id = u.id
+                    WHERE c.id = ?
+                    """, id);
+
+            // Motivo de rechazo (columna puede no existir aún en la BD)
+            try {
+                String motivo = db.queryForObject(
+                        "SELECT motivo_rechazo FROM conductores WHERE id = ?", String.class, id);
+                conductor.put("motivo_rechazo", motivo);
+            } catch (Exception ex) {
+                conductor.put("motivo_rechazo", null);
+            }
+
+            return ResponseEntity.ok(conductor);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(404).body(Map.of("error", "Conductor no encontrado"));
+        }
+    }
+
+    /**
      * ADMIN: Aprueba o rechaza a un conductor.
      */
     @PatchMapping("/admin/conductor/{id}/estado")

@@ -12,6 +12,17 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.IOException;
+import java.net.MalformedURLException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.util.UUID;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.UrlResource;
+import org.springframework.http.MediaType;
+
 import org.springframework.web.bind.annotation.*;
 
 import org.springframework.web.multipart.MultipartFile;
@@ -32,6 +43,39 @@ public class ConductorControlador {
 
         @Autowired
         private JdbcTemplate db;
+
+        private static final String DIRECTORIO_DOCUMENTOS = "/var/www/ds2/movify/uploads-conductores/";
+
+        /**
+         * Guarda un archivo subido en disco con un nombre único, y devuelve
+         * el nombre generado para almacenarlo en la BD.
+         */
+        private String guardarArchivo(MultipartFile archivo, String prefijo) {
+                if (archivo == null || archivo.isEmpty()) {
+                        return null;
+                }
+                try {
+                        Path directorio = Paths.get(DIRECTORIO_DOCUMENTOS);
+                        if (!Files.exists(directorio)) {
+                                Files.createDirectories(directorio);
+                        }
+
+                        String nombreOriginal = archivo.getOriginalFilename();
+                        String extension = "";
+                        if (nombreOriginal != null && nombreOriginal.contains(".")) {
+                                extension = nombreOriginal.substring(nombreOriginal.lastIndexOf("."));
+                        }
+
+                        String nombreUnico = prefijo + "_" + UUID.randomUUID().toString() + extension;
+                        Path rutaDestino = directorio.resolve(nombreUnico);
+                        Files.copy(archivo.getInputStream(), rutaDestino, StandardCopyOption.REPLACE_EXISTING);
+
+                        return nombreUnico;
+                } catch (IOException e) {
+                        System.err.println("⚠️ Error al guardar archivo físico: " + e.getMessage());
+                        return archivo.getOriginalFilename(); // fallback: guardamos al menos el nombre
+                }
+        }
 
         // ==========================================
         // NUEVO: ACTUALIZAR UBICACIÓN Y ESTADO
@@ -133,16 +177,16 @@ public class ConductorControlador {
                         conductor.setModelo(modelo);
 
                         conductor.setLicencia(
-                                        licencia.getOriginalFilename());
+                                        guardarArchivo(licencia, "licencia"));
 
                         conductor.setSoat(
-                                        soat.getOriginalFilename());
+                                        guardarArchivo(soat, "soat"));
 
                         conductor.setTarjetaPropiedad(
-                                        tarjetaPropiedad.getOriginalFilename());
+                                        guardarArchivo(tarjetaPropiedad, "tarjeta"));
 
                         conductor.setCedula(
-                                        cedula.getOriginalFilename());
+                                        guardarArchivo(cedula, "cedula"));
 
                         conductor.setEstado("pendiente");
 
@@ -403,6 +447,34 @@ public class ConductorControlador {
                                         .body(Map.of(
                                                         "error",
                                                         e.getMessage()));
+                }
+        }
+
+        // =========================
+        // SERVIR DOCUMENTO (ADMIN/CONDUCTOR)
+        // =========================
+
+        @GetMapping("/documento/{nombreArchivo:.+}")
+        public ResponseEntity<Resource> obtenerDocumento(@PathVariable String nombreArchivo) {
+                try {
+                        Path ruta = Paths.get(DIRECTORIO_DOCUMENTOS).resolve(nombreArchivo).normalize();
+                        Resource recurso = new UrlResource(ruta.toUri());
+
+                        if (!recurso.exists() || !recurso.isReadable()) {
+                                return ResponseEntity.status(404).build();
+                        }
+
+                        String contentType = Files.probeContentType(ruta);
+                        if (contentType == null) {
+                                contentType = "application/octet-stream";
+                        }
+
+                        return ResponseEntity.ok()
+                                        .contentType(MediaType.parseMediaType(contentType))
+                                        .body(recurso);
+
+                } catch (MalformedURLException | IOException e) {
+                        return ResponseEntity.status(400).build();
                 }
         }
 }
