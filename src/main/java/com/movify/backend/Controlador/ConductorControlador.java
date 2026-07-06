@@ -13,7 +13,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.io.IOException;
-import java.net.MalformedURLException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -473,7 +472,7 @@ public class ConductorControlador {
                                         .contentType(MediaType.parseMediaType(contentType))
                                         .body(recurso);
 
-                } catch (MalformedURLException | IOException e) {
+                } catch ( IOException e ) {
                         return ResponseEntity.status(400).build();
                 }
         }
