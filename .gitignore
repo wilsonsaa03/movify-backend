@@ -31,3 +31,13 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Secretos y datos locales (nunca al repo)
+application-local.properties
+src/main/resources/application-local.properties
+*.env
+.env*
+uploads-conductores/
+*.sql.bak
+dump-*.sql
+dump-*.zip

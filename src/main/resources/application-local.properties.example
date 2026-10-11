@@ -1,0 +1,11 @@
+# Copia este archivo como application-local.properties (está en .gitignore) y arranca con:
+#   mvnw spring-boot:run -Dspring-boot.run.profiles=local
+spring.datasource.url=jdbc:postgresql://localhost:5432/movify_local
+spring.datasource.username=dev_movify
+spring.datasource.password=CAMBIA_ESTO
+app.jwt.secret=CAMBIA_ESTO_POR_UN_SECRETO_DE_MAS_DE_32_CARACTERES
+app.admin.secret-code=CODIGO_LOCAL
+app.frontend.url=http://localhost:4200
+app.documentos.dir=./uploads-conductores
+app.demo.simulacion=true
+logging.level.com.movify=DEBUG

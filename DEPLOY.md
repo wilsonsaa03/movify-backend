@@ -44,7 +44,7 @@ Dentro de psql:
 
 ```sql
 CREATE DATABASE movify_db;
-CREATE USER dev_movify WITH PASSWORD 'Movify2026*';
+CREATE USER dev_movify WITH PASSWORD 'UNA_CLAVE_NUEVA_Y_LARGA';  -- nunca la escribas en el repo
 GRANT ALL PRIVILEGES ON DATABASE movify_db TO dev_movify;
 \q
 ```
@@ -202,15 +202,15 @@ En el repositorio de GitHub ve a **Settings → Secrets and variables → Action
 | `VPS_USER` | Usuario SSH | `ubuntu` |
 | `VPS_SSH_KEY` | Contenido de la clave privada SSH | `-----BEGIN OPENSSH PRIVATE KEY-----...` |
 | `VPS_PORT` | Puerto SSH | `22` |
-| `GH_PAT` | Personal Access Token de GitHub | `ghp_xxxxxxxxxxxx` |
+| `DB_PASSWORD` | Contraseña de `dev_movify` en PostgreSQL | (generada, solo letras y números) |
+| `JWT_SECRET` | Secreto para firmar los JWT, mínimo 32 caracteres | `openssl rand -hex 32` |
+| `MAIL_PASSWORD` | Contraseña de aplicación de Gmail | (16 letras) |
+| `ADMIN_SECRET_CODE` | Código para registrar administradores | `openssl rand -hex 12` |
 
-### Cómo generar el GH_PAT
+> El deploy ya no usa `GH_PAT`: el jar se compila en GitHub Actions y se sube por SCP.
+> Los secretos se escriben en `/etc/movify/movify.env` (permisos 600) y systemd los carga
+> con `EnvironmentFile`. Usa valores sin espacios ni comillas.
 
-1. GitHub → **Settings** → **Developer settings**
-2. **Personal access tokens** → **Tokens (classic)**
-3. **Generate new token (classic)**
-4. Marca el permiso `repo`
-5. Copia el token generado y guárdalo como secret `GH_PAT`
 
 ### Cómo obtener la clave SSH privada
 
