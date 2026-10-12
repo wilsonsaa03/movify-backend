@@ -11,6 +11,21 @@ jobs:
   build:
     name: Compilar y probar
     runs-on: ubuntu-latest
+    # PostgreSQL real para la prueba de punta a punta (migraciones V1–V4 y triggers del DER v2.3)
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dev_movify
+          POSTGRES_PASSWORD: clave_de_pruebas
+          POSTGRES_DB: movify_pruebas
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dev_movify"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -22,6 +37,12 @@ jobs:
 
       - name: Compilar + pruebas
         run: mvn -B verify
+        env:
+          MOVIFY_IT: 'true'
+          DB_URL: jdbc:postgresql://localhost:5432/movify_pruebas
+          DB_USER: dev_movify
+          DB_PASSWORD: clave_de_pruebas
+          TZ: America/Bogota
 
       - uses: actions/upload-artifact@v4
         with:
@@ -64,12 +85,16 @@ jobs:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
           ADMIN_SECRET_CODE: ${{ secrets.ADMIN_SECRET_CODE }}
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
+          TWILIO_MESSAGING_SERVICE_SID: ${{ secrets.TWILIO_MESSAGING_SERVICE_SID }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
-          envs: DB_PASSWORD,JWT_SECRET,MAIL_PASSWORD,ADMIN_SECRET_CODE
+          envs: DB_PASSWORD,JWT_SECRET,MAIL_PASSWORD,ADMIN_SECRET_CODE,TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN,TWILIO_FROM,TWILIO_MESSAGING_SERVICE_SID
           command_timeout: 10m
           script: |
             set -e
@@ -83,6 +108,10 @@ jobs:
               printf 'JWT_SECRET=%s\n'        "$JWT_SECRET"
               printf 'MAIL_PASSWORD=%s\n'     "$MAIL_PASSWORD"
               printf 'ADMIN_SECRET_CODE=%s\n' "$ADMIN_SECRET_CODE"
+              printf 'TWILIO_ACCOUNT_SID=%s\n'  "$TWILIO_ACCOUNT_SID"
+              printf 'TWILIO_AUTH_TOKEN=%s\n'   "$TWILIO_AUTH_TOKEN"
+              printf 'TWILIO_FROM=%s\n'         "$TWILIO_FROM"
+              printf 'TWILIO_MESSAGING_SERVICE_SID=%s\n' "$TWILIO_MESSAGING_SERVICE_SID"
               printf 'DEMO_SIMULACION=false\n'
             } | sudo tee /etc/movify/movify.env > /dev/null
             sudo chmod 600 /etc/movify/movify.env
