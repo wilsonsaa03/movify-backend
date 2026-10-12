@@ -123,7 +123,7 @@ class FlujoCompletoTest {
         Map<String, Object> nuevo = ok(post("/api/auth/refresh"), null, Map.of("refreshToken", r.get("refreshToken")));
         tokenConductor = (String) nuevo.get("token");
         refreshConductor = (String) nuevo.get("refreshToken");
-        assertThat((List<?>) nuevo.get("roles")).contains("conductor", "cliente");
+        assertThat((List<Object>) nuevo.get("roles")).contains("conductor", "cliente");
         assertThat(nuevo.get("rol")).isEqualTo("conductor");
 
         // Placa de taxi en una moto: la BD la rechaza
