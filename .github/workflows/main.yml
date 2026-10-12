@@ -36,13 +36,31 @@ jobs:
           cache: maven
 
       - name: Compilar + pruebas
-        run: mvn -B verify
+        run: |
+          set -o pipefail
+          mvn -B verify 2>&1 | tee build.log
         env:
           MOVIFY_IT: 'true'
           DB_URL: jdbc:postgresql://localhost:5432/movify_pruebas
           DB_USER: dev_movify
           DB_PASSWORD: clave_de_pruebas
           TZ: America/Bogota
+
+      # Si falla, deja los errores visibles en la pestaña "Checks" del PR (sin descargar logs)
+      - name: Resumen de errores
+        if: failure()
+        run: |
+          grep -E '^\[ERROR\]' build.log | grep -vE 'Re-run Maven|Help 1|^\[ERROR\] *$|-> \[Help' | head -60 > errores.txt || true
+          for f in target/surefire-reports/*.txt; do
+            [ -f "$f" ] && grep -qE 'FAILURE|ERROR' "$f" && head -40 "$f" >> errores.txt
+          done
+          i=0
+          while mapfile -t -n 15 bloque && ((${#bloque[@]})); do
+            i=$((i+1)); texto=$(printf '%s%%0A' "${bloque[@]}")
+            echo "::error title=Errores ($i)::${texto}"
+            [ $i -ge 9 ] && break
+          done < errores.txt
+          cat errores.txt >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
