@@ -356,11 +356,24 @@ class FlujoCompletoTest {
         return (List<Map<String, Object>>) o;
     }
 
-    /** Base limpia para la prueba (solo datos; el esquema y los catálogos quedan). */
+    /**
+     * Base limpia para la prueba (solo datos; el esquema y los catálogos quedan).
+     * OJO: rol_permisos y tarifas tienen FK a usuarios (asignado_por / creado_por), así que
+     * TRUNCATE ... CASCADE también las vaciaría: se copian antes y se devuelven después.
+     */
     private void limpiar() {
         db.execute("""
+                DROP TABLE IF EXISTS _rp, _tar;
+                CREATE TEMP TABLE _rp AS SELECT * FROM rol_permisos;
+                CREATE TEMP TABLE _tar AS SELECT * FROM tarifas;
+                UPDATE _rp SET asignado_por = NULL;
+                UPDATE _tar SET creado_por = NULL;
                 TRUNCATE usuarios, codigos_verificacion, registro_accesos, historial_estados, auditoria_cambios,
-                         auditoria_admin RESTART IDENTITY CASCADE
+                         auditoria_admin RESTART IDENTITY CASCADE;
+                INSERT INTO rol_permisos SELECT * FROM _rp;
+                INSERT INTO tarifas OVERRIDING SYSTEM VALUE SELECT * FROM _tar;
+                SELECT setval(pg_get_serial_sequence('tarifas', 'id'), COALESCE((SELECT max(id) FROM tarifas), 0) + 1, false);
+                DROP TABLE _rp, _tar;
                 """);
     }
 }
