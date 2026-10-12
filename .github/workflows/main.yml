@@ -1,103 +1,119 @@
-name: 🚀 Deploy Movify Backend
- 
+name: 🚀 Backend MoviFY
+
 on:
+  pull_request:
+    branches: [main]
   push:
-    branches:
-      - main
- 
+    branches: [main]
+
 jobs:
-  deploy:
-    name: Deploy Spring Boot
+  # Compila y corre las pruebas en cada PR y en cada push
+  build:
+    name: Compilar y probar
     runs-on: ubuntu-latest
- 
     steps:
-      - name: 📥 Checkout
-        uses: actions/checkout@v4
- 
-      - name: 🚀 Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
- 
-        env:
-          GITHUB_PAT: ${{ secrets.GH_PAT }}
- 
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
         with:
-          host:     ${{ secrets.VPS_HOST }}
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Compilar + pruebas
+        run: mvn -B verify
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: target/*.jar
+          retention-days: 7
+
+  # Solo despliega lo que ya compiló y pasó pruebas (el VPS no necesita git, Maven ni token de GitHub)
+  deploy:
+    name: Desplegar en el VPS
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: dist
+
+      - name: Preparar jar
+        run: |
+          JAR=$(ls dist/*.jar | grep -v plain | head -1)
+          mkdir -p subir && cp "$JAR" subir/app-new.jar
+
+      - name: Subir jar
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
-          key:      ${{ secrets.VPS_SSH_KEY }}
-          port:     ${{ secrets.VPS_PORT }}
-          envs:     GITHUB_PAT
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          source: subir/app-new.jar
+          target: /var/www/ds2/movify-api
+          strip_components: 1
+
+      - name: Configurar secretos y reiniciar
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          ADMIN_SECRET_CODE: ${{ secrets.ADMIN_SECRET_CODE }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          envs: DB_PASSWORD,JWT_SECRET,MAIL_PASSWORD,ADMIN_SECRET_CODE
           command_timeout: 10m
- 
           script: |
             set -e
- 
-            echo "========================================"
-            echo " Deploy Movify Backend — $(date)"
-            echo "========================================"
- 
-            PROJECT_PATH="/var/www/ds2/movify-api"
- 
-            # Clonar si no existe
-            if [ ! -d "$PROJECT_PATH/.git" ]; then
-              git clone \
-                https://wilsonsaa03:$GITHUB_PAT@github.com/wilsonsaa03/movify-backend.git \
-                $PROJECT_PATH
+            APP=/var/www/ds2/movify-api
+
+            # 1) Secretos fuera del repo: archivo legible solo por root, cargado por systemd
+            sudo mkdir -p /etc/movify
+            umask 077
+            {
+              printf 'DB_PASSWORD=%s\n'       "$DB_PASSWORD"
+              printf 'JWT_SECRET=%s\n'        "$JWT_SECRET"
+              printf 'MAIL_PASSWORD=%s\n'     "$MAIL_PASSWORD"
+              printf 'ADMIN_SECRET_CODE=%s\n' "$ADMIN_SECRET_CODE"
+              printf 'DEMO_SIMULACION=false\n'
+            } | sudo tee /etc/movify/movify.env > /dev/null
+            sudo chmod 600 /etc/movify/movify.env
+
+            sudo mkdir -p /etc/systemd/system/movify.service.d
+            printf '[Service]\nEnvironmentFile=/etc/movify/movify.env\n' \
+              | sudo tee /etc/systemd/system/movify.service.d/env.conf > /dev/null
+            sudo systemctl daemon-reload
+
+            # 2) Limpiar el token de GitHub que dejó el deploy anterior en .git/config
+            if [ -d "$APP/.git" ]; then
+              git -C "$APP" remote set-url origin https://github.com/wilsonsaa03/movify-backend.git || true
             fi
- 
-            cd $PROJECT_PATH
- 
-            git remote set-url origin \
-              https://wilsonsaa03:$GITHUB_PAT@github.com/wilsonsaa03/movify-backend.git
- 
-            git fetch origin
-            git reset --hard origin/main
- 
-            # Parar servicio ANTES de compilar
-            echo "Parando servicio..."
-            sudo systemctl stop movify || true
-            sleep 2
-            rm -rf /var/www/ds2/movify-api/target || true
- 
-            # Compilar
-            echo "========================================"
-            echo " Compilando proyecto"
-            echo "========================================"
-            mvn clean package -DskipTests
- 
-            # Reemplazar JAR
-            echo "========================================"
-            echo " Generando app.jar"
-            echo "========================================"
-            cp target/*.jar app.jar
- 
-            # Iniciar servicio
-            echo "========================================"
-            echo " Iniciando servicio"
-            echo "========================================"
-            sudo systemctl start movify
- 
-            # Healthcheck
-            echo "Healthcheck..."
-            for i in $(seq 1 10); do
+
+            # 3) Cambiar el jar guardando el anterior para poder volver atrás
+            cd "$APP"
+            [ -f app.jar ] && cp app.jar app-prev.jar
+            mv app-new.jar app.jar
+            sudo systemctl restart movify
+
+            # 4) Healthcheck; si falla, se restaura la versión anterior
+            for i in $(seq 1 20); do
               sleep 3
-              STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-                       http://localhost:8080/api/auth/login \
-                       -X POST -H "Content-Type: application/json" \
-                       -d '{"correo":"test","password":"test"}' || echo "000")
-              if [ "$STATUS" != "000" ]; then
-                echo "Backend respondiendo (HTTP $STATUS)"
-                break
+              if curl -fs http://localhost:8080/api/test/ping > /dev/null; then
+                echo "Backend arriba"; exit 0
               fi
-              echo "   Intento $i/10..."
+              echo "Esperando backend ($i/20)..."
             done
- 
-            if [ "$STATUS" = "000" ]; then
-              echo "Backend no responde despues de 30s"
-              sudo journalctl -u movify -n 50 --no-pager
-              exit 1
+            echo "El backend no respondió; restaurando versión anterior"
+            sudo journalctl -u movify -n 80 --no-pager || true
+            if [ -f app-prev.jar ]; then
+              mv app-prev.jar app.jar && sudo systemctl restart movify
             fi
- 
-            echo "========================================"
-            echo " Deploy completado"
-            echo "========================================"
- 
+            exit 1

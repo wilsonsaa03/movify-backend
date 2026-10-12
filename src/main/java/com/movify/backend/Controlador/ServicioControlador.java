@@ -1,71 +1,50 @@
 package com.movify.backend.Controlador;
 
 import java.util.List;
+import java.util.Map;
 
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.movify.backend.Base_de_datos.ServicioRepositorio;
-import com.movify.backend.Modelo.Servicio;
+import com.movify.backend.Seguridad.SesionActual;
 
+/** Historiales simples. Cada consulta valida que el id de la URL sea el del token. */
 @RestController
 @RequestMapping("/api/servicios")
 public class ServicioControlador {
 
-    @Autowired
-    private ServicioRepositorio servicioRepositorio;
+    private final JdbcTemplate db;
+    private final SesionActual sesion;
 
-    @Autowired
-    private JdbcTemplate db;
-
-    // =========================
-    // HISTORIAL DEL USUARIO
-    // =========================
+    public ServicioControlador(JdbcTemplate db, SesionActual sesion) {
+        this.db = db;
+        this.sesion = sesion;
+    }
 
     @GetMapping("/usuario/{usuarioId}")
-
-    public List<Servicio> obtenerServiciosUsuario(
-            @PathVariable Long usuarioId) {
-
-        return servicioRepositorio
-                .findByUsuarioId(usuarioId);
-
+    public List<Map<String, Object>> serviciosUsuario(@PathVariable Long usuarioId) {
+        sesion.exigirUsuario(usuarioId);
+        return db.queryForList("SELECT * FROM servicios WHERE usuario_id = ? ORDER BY fecha_solicitud DESC",
+                usuarioId);
     }
 
-    // ==========================================
-    // NUEVO: VIAJES DEL MES ACTUAL (USUARIO)
-    // ==========================================
     @GetMapping("/usuario/{usuarioId}/mes-actual")
-    public List<Servicio> obtenerServiciosUsuarioMes(@PathVariable Long usuarioId) {
-        String sql = """
-            SELECT * FROM servicios 
-            WHERE usuario_id = ? 
-            AND EXTRACT(MONTH FROM fecha_solicitud) = EXTRACT(MONTH FROM CURRENT_DATE)
-            AND EXTRACT(YEAR FROM fecha_solicitud) = EXTRACT(YEAR FROM CURRENT_DATE)
-            ORDER BY fecha_solicitud DESC
-        """;
-        // Nota: Si usas ServicioRepositorio con @Query también funcionaría, 
-        // pero aquí usamos JdbcTemplate por consistencia con tus otros controladores.
-        return db.query(sql, new org.springframework.jdbc.core.BeanPropertyRowMapper<>(Servicio.class), usuarioId);
+    public List<Map<String, Object>> serviciosUsuarioMes(@PathVariable Long usuarioId) {
+        sesion.exigirUsuario(usuarioId);
+        return db.queryForList("""
+                SELECT * FROM servicios
+                WHERE usuario_id = ? AND fecha_solicitud >= DATE_TRUNC('month', CURRENT_DATE)
+                ORDER BY fecha_solicitud DESC
+                """, usuarioId);
     }
-
-    // =========================
-    // HISTORIAL DEL CONDUCTOR
-    // =========================
 
     @GetMapping("/conductor/{conductorId}")
-
-    public List<Servicio> obtenerServiciosConductor(
-            @PathVariable Long conductorId) {
-
-        return servicioRepositorio
-                .findByConductorId(conductorId);
-
+    public List<Map<String, Object>> serviciosConductor(@PathVariable Long conductorId) {
+        sesion.exigirConductor(conductorId);
+        return db.queryForList("SELECT * FROM servicios WHERE conductor_id = ? ORDER BY fecha_solicitud DESC",
+                conductorId);
     }
-
 }

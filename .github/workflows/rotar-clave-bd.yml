@@ -1,0 +1,29 @@
+name: 🔑 Rotar clave de la base de datos
+
+# Se ejecuta a mano: Actions → "Rotar clave de la base de datos" → Run workflow.
+# Antes de correrlo, actualiza el secret DB_PASSWORD con la clave NUEVA.
+on:
+  workflow_dispatch:
+
+jobs:
+  rotar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cambiar clave de dev_movify y reiniciar backend
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          envs: DB_PASSWORD
+          script: |
+            set -e
+            # Solo letras y números (genérala con: openssl rand -hex 16)
+            echo "$DB_PASSWORD" | grep -Eq '^[A-Za-z0-9]{16,}$' || { echo "La clave debe tener 16+ letras/números"; exit 1; }
+            sudo -u postgres psql -v ON_ERROR_STOP=1 -q -c "ALTER USER dev_movify WITH PASSWORD '${DB_PASSWORD}'"
+            sudo sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=${DB_PASSWORD}|" /etc/movify/movify.env
+            sudo systemctl restart movify
+            echo "Clave de la base de datos rotada y backend reiniciado"
