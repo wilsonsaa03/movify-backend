@@ -8,4 +8,6 @@ app.admin.secret-code=CODIGO_LOCAL
 app.frontend.url=http://localhost:4200
 app.documentos.dir=./uploads-conductores
 app.demo.simulacion=true
+# Sin cuenta de Twilio: el código SMS sale en la consola y en la respuesta de /api/auth/codigo
+app.sms.consola=true
 logging.level.com.movify=DEBUG
