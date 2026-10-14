@@ -33,6 +33,29 @@ public final class ConductorDtos {
             List<@Pattern(regexp = "A1|A2|B1|B2|B3|C1|C2|C3", message = "Categoría no válida") String> categoriasLicencia) {
     }
 
+    /** Paso 1 "Confirma quién eres". */
+    public record IdentidadRequest(
+            @NotBlank @Pattern(regexp = "CC|CE|PPT", message = "Tipo de documento no válido") @JsonAlias("tipo_identificacion")
+            String tipoIdentificacion,
+            @NotBlank(message = "Escribe tu número de documento")
+            @Pattern(regexp = "[0-9A-Za-z.\\- ]{4,24}", message = "Número de documento no válido") @JsonAlias("numero_identificacion")
+            String numeroIdentificacion,
+            @NotNull(message = "Escribe tu fecha de nacimiento") @Past @JsonAlias("fecha_nacimiento") LocalDate fechaNacimiento) {
+    }
+
+    /** Paso 2 "Tu licencia". */
+    public record LicenciaRequest(
+            @NotEmpty(message = "Elige la categoría de tu licencia") @JsonAlias("categorias_licencia")
+            List<@Pattern(regexp = "A1|A2|B1|B2|B3|C1|C2|C3", message = "Categoría no válida") String> categoriasLicencia,
+            @NotBlank(message = "Escribe el número de tu licencia")
+            @Pattern(regexp = "[0-9A-Za-z.\\- ]{4,24}", message = "Número de licencia no válido") @JsonAlias("numero_licencia")
+            String numeroLicencia) {
+    }
+
+    /** Paso 5 "Revisa y envía". */
+    public record SolicitudRequest(@JsonAlias("acepta_condiciones") boolean aceptaCondiciones) {
+    }
+
     /** Paso "Vehículo". Taxi: placa ABC123 y empresa afiliadora. Moto: placa ABC12D. */
     public record VehiculoRequest(
             @NotBlank @Pattern(regexp = "moto|taxi", message = "Solo se aceptan moto o taxi") @JsonAlias("tipo_vehiculo")
@@ -43,7 +66,10 @@ public final class ConductorDtos {
             @NotNull(message = "Escribe el modelo (año)") @Min(1990) @Max(2100) @JsonAlias("modelo_anio") Integer modeloAnio,
             @NotBlank(message = "Escribe el color") @Size(max = 30) String color,
             @Size(max = 80) @JsonAlias("empresa_afiliadora") String empresaAfiliadora,
-            @Size(max = 10) @JsonAlias("numero_interno") String numeroInterno) {
+            @Size(max = 10) @JsonAlias("numero_interno") String numeroInterno,
+            @Min(value = 50, message = "Cilindraje no válido") @Max(value = 2000, message = "Cilindraje no válido")
+            @JsonAlias("cilindraje_cc") Integer cilindrajeCc,
+            @JsonAlias("casco_pasajero") Boolean cascoPasajero) {
     }
 
     public record DisponibilidadRequest(

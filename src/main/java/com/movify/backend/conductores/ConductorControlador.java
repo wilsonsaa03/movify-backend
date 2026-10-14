@@ -29,7 +29,12 @@ import com.movify.backend.comun.Datos;
 import com.movify.backend.comun.RecursoNoEncontradoException;
 import com.movify.backend.comun.ReglaNegocioException;
 import com.movify.backend.conductores.ConductorDtos.DisponibilidadRequest;
+import com.movify.backend.conductores.ConductorDtos.IdentidadRequest;
+import com.movify.backend.conductores.ConductorDtos.LicenciaRequest;
 import com.movify.backend.conductores.ConductorDtos.PerfilConductorRequest;
+import com.movify.backend.conductores.ConductorDtos.SolicitudRequest;
+import com.movify.backend.configuracion.ContextoPeticion;
+import jakarta.servlet.http.HttpServletRequest;
 import com.movify.backend.conductores.ConductorDtos.UbicacionRequest;
 import com.movify.backend.conductores.ConductorDtos.VehiculoRequest;
 import com.movify.backend.seguridad.SesionActual;
@@ -65,6 +70,44 @@ public class ConductorControlador {
     @PostMapping("/perfil")
     public Map<String, Object> guardarPerfil(@Valid @RequestBody PerfilConductorRequest req) {
         return conductores.guardarPerfil(sesion.usuarioId(), req);
+    }
+
+    /** Paso 1 de la app: tipo y número de documento + fecha de nacimiento. Crea el perfil si no existe. */
+    @PostMapping("/identidad")
+    public Map<String, Object> identidad(@Valid @RequestBody IdentidadRequest req) {
+        return conductores.guardarIdentidad(sesion.usuarioId(), req);
+    }
+
+    /** Paso 2 de la app: categoría y número de licencia. */
+    @PostMapping("/licencia")
+    public Map<String, Object> licencia(@Valid @RequestBody LicenciaRequest req) {
+        return conductores.guardarLicencia(sesion.conductorId(), req);
+    }
+
+    /** Paso 5 de la app: "Enviar solicitud". */
+    @PostMapping("/solicitud")
+    public Map<String, Object> enviarSolicitud(@RequestBody SolicitudRequest req, HttpServletRequest http) {
+        ContextoPeticion ctx = ContextoPeticion.de(http);
+        return conductores.enviarSolicitud(sesion.conductorId(), req.aceptaCondiciones(), ctx.ip(), ctx.plataforma());
+    }
+
+    /** Paso en el que va el registro del conductor. ?tipo=moto|taxi si todavía no registra el vehículo. */
+    @GetMapping("/registro")
+    public Map<String, Object> progresoRegistro(@RequestParam(required = false) String tipo) {
+        return conductores.progresoRegistro(sesion.usuarioId(), tipo);
+    }
+
+    /** El conductor ve su propio documento (la app lo muestra como vista previa). */
+    @GetMapping("/mis-documentos/{id}/archivo")
+    public ResponseEntity<Resource> miDocumento(@PathVariable Long id) {
+        ArchivoServicio.Archivo doc = archivos.obtener(conductores.archivoPropio(sesion.conductorId(), id));
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(doc.contentType()))
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.inline().filename(doc.nombre()).build().toString())
+                .header("X-Content-Type-Options", "nosniff")
+                .header("Content-Security-Policy", "default-src 'none'; sandbox")
+                .header(HttpHeaders.CACHE_CONTROL, "private, no-store")
+                .body(doc.recurso());
     }
 
     @GetMapping("/mi-perfil")

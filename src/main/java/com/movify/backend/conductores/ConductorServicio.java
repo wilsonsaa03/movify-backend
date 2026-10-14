@@ -17,6 +17,8 @@ import com.movify.backend.comun.ArchivoServicio;
 import com.movify.backend.comun.Datos;
 import com.movify.backend.comun.RecursoNoEncontradoException;
 import com.movify.backend.comun.ReglaNegocioException;
+import com.movify.backend.conductores.ConductorDtos.IdentidadRequest;
+import com.movify.backend.conductores.ConductorDtos.LicenciaRequest;
 import com.movify.backend.conductores.ConductorDtos.PerfilConductorRequest;
 import com.movify.backend.conductores.ConductorDtos.UbicacionRequest;
 import com.movify.backend.conductores.ConductorDtos.VehiculoRequest;
@@ -81,6 +83,83 @@ public class ConductorServicio {
         return Map.of("message", "Datos actualizados", "requiereNuevoToken", false);
     }
 
+    /**
+     * Paso 1 "Confirma quién eres": crea el perfil (sin licencia todavía) o corrige los datos.
+     * Al crearlo la BD le asigna el rol conductor, por eso la app pide /api/auth/refresh.
+     */
+    @Transactional
+    public Map<String, Object> guardarIdentidad(Long usuarioId, IdentidadRequest req) {
+        String numero = req.numeroIdentificacion().replaceAll("[.\\- ]", "").toUpperCase(Locale.ROOT);
+        actor.declarar(usuarioId, ActorBd.CONDUCTOR);
+        if (!tienePerfil(usuarioId)) {
+            db.update("""
+                    INSERT INTO conductores (usuario_id, tipo_identificacion, numero_identificacion, fecha_nacimiento)
+                    VALUES (?, ?, ?, ?)
+                    """, usuarioId, req.tipoIdentificacion(), numero, req.fechaNacimiento());
+            return Map.of("message", "Listo. Ahora las fotos de tu documento.", "requiereNuevoToken", true);
+        }
+        exigirNoAprobado(usuarioId);
+        db.update("""
+                UPDATE conductores SET tipo_identificacion = ?, numero_identificacion = ?, fecha_nacimiento = ?
+                WHERE usuario_id = ?
+                """, req.tipoIdentificacion(), numero, req.fechaNacimiento(), usuarioId);
+        return Map.of("message", "Datos actualizados", "requiereNuevoToken", false);
+    }
+
+    /** Paso 2 "Tu licencia": categoría y número (el vencimiento va en el documento de la licencia). */
+    @Transactional
+    public Map<String, Object> guardarLicencia(Long usuarioId, LicenciaRequest req) {
+        exigirPerfil(usuarioId);
+        exigirNoAprobado(usuarioId);
+        actor.declarar(usuarioId, ActorBd.CONDUCTOR);
+        String arreglo = "{" + String.join(",", req.categoriasLicencia().stream().distinct().toList()) + "}";
+        String numero = req.numeroLicencia().replaceAll("[.\\- ]", "").toUpperCase(Locale.ROOT);
+        db.update("UPDATE conductores SET categorias_licencia = ?::varchar(2)[], numero_licencia = ? WHERE usuario_id = ?",
+                arreglo, numero, usuarioId);
+        return Map.of("message", "Licencia guardada");
+    }
+
+    /**
+     * Paso 5 "Revisa y envía": todo completo + acepta las condiciones → queda en la fila del admin.
+     * Si lo habían rechazado y ya corrigió, vuelve a "pendiente".
+     */
+    @Transactional
+    public Map<String, Object> enviarSolicitud(Long usuarioId, boolean aceptaCondiciones, String ip, String plataforma) {
+        exigirPerfil(usuarioId);
+        if (!aceptaCondiciones) {
+            throw new ReglaNegocioException(400, "Debes confirmar que la información es real y aceptar las condiciones");
+        }
+        Map<String, Object> p = progresoRegistro(usuarioId, null);
+        String siguiente = String.valueOf(p.get("siguiente"));
+        if ("aprobado".equals(siguiente)) throw new ReglaNegocioException("Tu cuenta de conductor ya está aprobada");
+        List<?> faltan = (List<?>) p.get("faltantes");
+        if (!faltan.isEmpty() || List.of("identidad", "licencia", "vehiculo", "documentos").contains(siguiente)) {
+            String nombres = faltan.stream().map(f -> String.valueOf(((Map<?, ?>) f).get("nombre"))).limit(3)
+                    .reduce((a, b) -> a + ", " + b).orElse("tus datos");
+            throw new ReglaNegocioException("Todavía falta: " + nombres);
+        }
+        actor.declarar(usuarioId, ActorBd.CONDUCTOR);
+        db.update("""
+                INSERT INTO aceptaciones_legales (usuario_id, documento_id, ip_origen, plataforma)
+                SELECT ?, id, ?, ? FROM documentos_legales WHERE tipo = 'contrato_conductor' AND activo
+                ON CONFLICT (usuario_id, documento_id) DO NOTHING
+                """, usuarioId, ip, plataforma);
+        db.update("""
+                UPDATE conductores
+                   SET solicitud_enviada_en = now(),
+                       estado = CASE WHEN estado IN ('rechazado', 'suspendido') THEN 'pendiente' ELSE estado END,
+                       motivo_estado = CASE WHEN estado IN ('rechazado', 'suspendido') THEN NULL ELSE motivo_estado END
+                 WHERE usuario_id = ?
+                """, usuarioId);
+        return Map.of("message", "¡Solicitud enviada! Revisaremos tus documentos.", "estado", "pendiente");
+    }
+
+    private void exigirNoAprobado(Long usuarioId) {
+        if ("aprobado".equals(estado(usuarioId))) {
+            throw new ReglaNegocioException("Tu perfil ya fue aprobado. Para cambiar estos datos escribe a soporte.");
+        }
+    }
+
     /** Después de corregir lo que el admin rechazó, el conductor vuelve a pedir revisión. */
     @Transactional
     public Map<String, Object> reenviarRevision(Long usuarioId) {
@@ -112,11 +191,93 @@ public class ConductorServicio {
         return r;
     }
 
+    /**
+     * En qué paso va el registro del conductor (la app lo usa para saber qué pantalla abrir).
+     * Funciona aunque todavía no tenga perfil.
+     *
+     * siguiente: identidad → licencia → vehiculo → documentos → enviar → revision · corregir · aprobado
+     */
+    public Map<String, Object> progresoRegistro(Long usuarioId, String tipoElegido) {
+        Map<String, Object> r = new HashMap<>();
+        boolean perfil = tienePerfil(usuarioId);
+        Map<String, Object> conductor = perfil ? db.queryForMap("""
+                SELECT tipo_identificacion, numero_identificacion, fecha_nacimiento,
+                       array_to_string(categorias_licencia, ',') AS categorias, numero_licencia,
+                       estado, motivo_estado, solicitud_enviada_en
+                FROM conductores WHERE usuario_id = ?
+                """, usuarioId) : null;
+        Map<String, Object> vehiculo = perfil ? vehiculoActivo(usuarioId) : null;
+        String tipo = vehiculo != null ? String.valueOf(vehiculo.get("tipo_vehiculo"))
+                : ("moto".equals(tipoElegido) || "taxi".equals(tipoElegido) ? tipoElegido : null);
+        Integer anio = vehiculo == null ? null : ((Number) vehiculo.get("modelo_anio")).intValue();
+
+        List<Map<String, Object>> documentos = perfil ? documentos(usuarioId) : List.of();
+        List<Map<String, Object>> requeridos = requeridos(tipo, anio);
+        List<String> listos = documentos.stream()
+                .filter(d -> "pendiente".equals(d.get("estado")) || "aprobado".equals(d.get("estado")))
+                .map(d -> String.valueOf(d.get("tipo_documento"))).toList();
+        boolean rechazados = documentos.stream().anyMatch(d -> "rechazado".equals(d.get("estado")));
+        String estado = conductor == null ? null : String.valueOf(conductor.get("estado"));
+        String categorias = conductor == null ? "" : String.valueOf(conductor.get("categorias"));
+
+        String siguiente;
+        if (!perfil || !pasoCompleto(requeridos, listos, "identidad")) siguiente = "identidad";
+        else if ("aprobado".equals(estado)) siguiente = "aprobado";
+        else if (conductor.get("solicitud_enviada_en") != null && ("rechazado".equals(estado) || rechazados)) siguiente = "corregir";
+        else if (categorias.isBlank() || !pasoCompleto(requeridos, listos, "licencia")) siguiente = "licencia";
+        else if (vehiculo == null || !pasoCompleto(requeridos, listos, "vehiculo")) siguiente = "vehiculo";
+        else if (!pasoCompleto(requeridos, listos, "documentos")) siguiente = "documentos";
+        else if (conductor.get("solicitud_enviada_en") == null) siguiente = "enviar";
+        else siguiente = "revision";
+
+        r.put("siguiente", siguiente);
+        r.put("tiene_perfil", perfil);
+        if (conductor != null) {
+            Map<String, Object> datos = new HashMap<>(conductor);
+            datos.put("categorias", categorias.isBlank() ? List.of() : List.of(categorias.split(",")));
+            r.put("conductor", datos);
+        } else {
+            r.put("conductor", null);
+        }
+        r.put("estado", estado);
+        r.put("motivo_estado", conductor == null ? null : conductor.get("motivo_estado"));
+        r.put("tipo_vehiculo", tipo);
+        r.put("vehiculo", vehiculo);
+        r.put("documentos", documentos);
+        r.put("requeridos", requeridos);
+        r.put("faltantes", requeridos.stream().filter(t -> !listos.contains(String.valueOf(t.get("codigo")))).toList());
+        return r;
+    }
+
+    private static boolean pasoCompleto(List<Map<String, Object>> requeridos, List<String> listos, String paso) {
+        return requeridos.stream().filter(t -> paso.equals(t.get("paso")))
+                .allMatch(t -> listos.contains(String.valueOf(t.get("codigo"))));
+    }
+
+    /** Documentos y fotos obligatorios para moto o taxi (y según la edad del vehículo), en el orden de la app. */
+    public List<Map<String, Object>> requeridos(String tipo, Integer modeloAnio) {
+        return db.queryForList("""
+                SELECT codigo, nombre, aplica_a, requiere_vencimiento, paso, orden, solo_imagen, ayuda
+                FROM tipos_documento
+                WHERE fn_documento_exigido(codigo, CAST(? AS varchar), CAST(? AS int))
+                ORDER BY CASE paso WHEN 'identidad' THEN 1 WHEN 'licencia' THEN 2 WHEN 'vehiculo' THEN 3 ELSE 4 END, orden
+                """, tipo, modeloAnio);
+    }
+
+    /** Nombre del archivo de un documento vigente del propio conductor (para verlo desde la app). */
+    public String archivoPropio(Long usuarioId, Long documentoId) {
+        return db.queryForList("""
+                SELECT ruta_archivo FROM documentos_conductor WHERE id = ? AND conductor_id = ?
+                """, String.class, documentoId, usuarioId)
+                .stream().findFirst().orElseThrow(() -> new RecursoNoEncontradoException("Documento no encontrado"));
+    }
+
     // ───────────── Vehículo ─────────────
 
     public Map<String, Object> vehiculoActivo(Long usuarioId) {
         return db.queryForList("""
-                SELECT id, tipo_vehiculo, placa, marca, linea, modelo_anio, color, empresa_afiliadora, numero_interno
+                SELECT id, tipo_vehiculo, placa, marca, linea, modelo_anio, color, empresa_afiliadora, numero_interno,
+                       cilindraje_cc, casco_pasajero
                 FROM vehiculos WHERE conductor_id = ? AND activo
                 """, usuarioId).stream().findFirst().orElse(null);
     }
@@ -130,15 +291,32 @@ public class ConductorServicio {
         if ("taxi".equals(v.tipoVehiculo()) && (v.empresaAfiliadora() == null || v.empresaAfiliadora().isBlank())) {
             throw new ReglaNegocioException(400, "Para un taxi debes indicar la empresa afiliadora");
         }
+        Integer cilindraje = "moto".equals(v.tipoVehiculo()) ? v.cilindrajeCc() : null;
+        Boolean casco = "moto".equals(v.tipoVehiculo()) ? v.cascoPasajero() : null;
+        Map<String, Object> actual = vehiculoActivo(usuarioId);
+
+        // Mientras no esté aprobado, "Editar" corrige el mismo vehículo (sus fotos y documentos se conservan)
+        if (actual != null && !"aprobado".equals(estado(usuarioId))) {
+            Long id = Datos.aLong(actual.get("id"));
+            db.update("""
+                    UPDATE vehiculos SET tipo_vehiculo = ?, placa = ?, marca = ?, linea = ?, modelo_anio = ?, color = ?,
+                                         empresa_afiliadora = ?, numero_interno = ?, cilindraje_cc = ?, casco_pasajero = ?
+                    WHERE id = ?
+                    """, v.tipoVehiculo(), placa, v.marca().trim(), Datos.vacioANull(v.linea()), v.modeloAnio(),
+                    v.color().trim(), Datos.vacioANull(v.empresaAfiliadora()), Datos.vacioANull(v.numeroInterno()),
+                    cilindraje, casco, id);
+            return Map.of("id", id, "message", "Vehículo actualizado");
+        }
+
         db.update("UPDATE vehiculos SET activo = false WHERE conductor_id = ? AND activo", usuarioId);
         Long id = db.queryForObject("""
                 INSERT INTO vehiculos (conductor_id, tipo_vehiculo, placa, marca, linea, modelo_anio, color,
-                                       empresa_afiliadora, numero_interno)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                       empresa_afiliadora, numero_interno, cilindraje_cc, casco_pasajero)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
                 """, Long.class, usuarioId, v.tipoVehiculo(), placa, v.marca().trim(), Datos.vacioANull(v.linea()),
                 v.modeloAnio(), v.color().trim(), Datos.vacioANull(v.empresaAfiliadora()),
-                Datos.vacioANull(v.numeroInterno()));
+                Datos.vacioANull(v.numeroInterno()), cilindraje, casco);
         return Map.of("id", id, "message", "Vehículo registrado. Ahora sube sus documentos.");
     }
 
@@ -148,7 +326,7 @@ public class ConductorServicio {
     public Map<String, Object> subirDocumento(Long usuarioId, String tipo, MultipartFile archivo, LocalDate vence) {
         exigirPerfil(usuarioId);
         Map<String, Object> td = db.queryForList(
-                "SELECT codigo, nombre, aplica_a, requiere_vencimiento FROM tipos_documento WHERE codigo = ?", tipo)
+                "SELECT codigo, nombre, aplica_a, requiere_vencimiento, solo_imagen FROM tipos_documento WHERE codigo = ?", tipo)
                 .stream().findFirst()
                 .orElseThrow(() -> new ReglaNegocioException(400, "Tipo de documento no válido: " + tipo));
         Long vehiculoId = null;
@@ -160,7 +338,8 @@ public class ConductorServicio {
         if (Boolean.TRUE.equals(td.get("requiere_vencimiento")) && vence == null) {
             throw new ReglaNegocioException(400, "Indica la fecha de vencimiento de " + td.get("nombre"));
         }
-        ArchivoServicio.Guardado g = archivos.guardar(archivo, tipo.replaceAll("[^a-z_]", ""), true);
+        boolean permitirPdf = !Boolean.TRUE.equals(td.get("solo_imagen")); // fotos y selfie: solo imagen
+        ArchivoServicio.Guardado g = archivos.guardar(archivo, tipo.replaceAll("[^a-z_]", ""), permitirPdf);
         actor.declarar(usuarioId, ActorBd.CONDUCTOR);
         try {
             Long id = db.queryForObject("""
@@ -186,26 +365,27 @@ public class ConductorServicio {
                 JOIN tipos_documento td ON td.codigo = d.tipo_documento
                 JOIN estados e ON e.ambito = 'documento' AND e.codigo = d.estado
                 WHERE d.conductor_id = ? AND d.vigente
+                  AND (d.vehiculo_id IS NULL
+                       OR d.vehiculo_id = (SELECT id FROM vehiculos WHERE conductor_id = d.conductor_id AND activo))
                 ORDER BY td.aplica_a, td.nombre
                 """, usuarioId);
     }
 
-    /** Documentos obligatorios para su tipo de vehículo que todavía no ha subido (o le rechazaron). */
+    /** Documentos obligatorios para su vehículo que todavía no ha subido (o le rechazaron). */
     public List<Map<String, Object>> faltantes(Long usuarioId) {
         Map<String, Object> v = vehiculoActivo(usuarioId);
         String tipo = v == null ? null : String.valueOf(v.get("tipo_vehiculo"));
+        Integer anio = v == null ? null : ((Number) v.get("modelo_anio")).intValue();
         return db.queryForList("""
-                SELECT td.codigo, td.nombre, td.aplica_a, td.requiere_vencimiento
+                SELECT td.codigo, td.nombre, td.aplica_a, td.requiere_vencimiento, td.paso, td.solo_imagen, td.ayuda
                 FROM tipos_documento td
-                WHERE (CASE WHEN ? = 'moto' THEN td.obligatorio_moto
-                            WHEN ? = 'taxi' THEN td.obligatorio_taxi
-                            ELSE td.obligatorio_moto OR td.obligatorio_taxi END)
+                WHERE fn_documento_exigido(td.codigo, CAST(? AS varchar), CAST(? AS int))
                   AND NOT EXISTS (SELECT 1 FROM documentos_conductor d
                                    WHERE d.conductor_id = ? AND d.tipo_documento = td.codigo AND d.vigente
                                      AND d.estado IN ('pendiente', 'aprobado')
-                                     AND (td.aplica_a = 'conductor' OR d.vehiculo_id = ?))
-                ORDER BY td.aplica_a, td.nombre
-                """, tipo, tipo, usuarioId, v == null ? null : v.get("id"));
+                                     AND (td.aplica_a = 'conductor' OR d.vehiculo_id = CAST(? AS bigint)))
+                ORDER BY CASE td.paso WHEN 'identidad' THEN 1 WHEN 'licencia' THEN 2 WHEN 'vehiculo' THEN 3 ELSE 4 END, td.orden
+                """, tipo, anio, usuarioId, v == null ? null : v.get("id"));
     }
 
     // ───────────── Disponibilidad y ubicación ─────────────

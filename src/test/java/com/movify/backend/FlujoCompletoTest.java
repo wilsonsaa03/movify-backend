@@ -154,6 +154,54 @@ class FlujoCompletoTest {
         assertThat(conectar.getResponse().getStatus()).isEqualTo(403);
     }
 
+    /** Registro por pasos de la app (Figma): identidad → licencia → vehículo → documentos → enviar solicitud. */
+    @Test
+    @Order(15)
+    void conductorTaxiRegistroPorPasos() throws Exception {
+        Map<String, Object> r = registrar("3007778899", "conductor", "rosa", "caicedo", "8642");
+        String t = (String) r.get("token");
+
+        Map<String, Object> p0 = ok(get("/api/conductor/registro?tipo=taxi"), t, null);
+        assertThat(p0.get("siguiente")).isEqualTo("identidad");
+        assertThat(cast(p0.get("requeridos"))).anyMatch(d -> "foto_interior".equals(d.get("codigo")));
+
+        Map<String, Object> id = ok(post("/api/conductor/identidad"), t, Map.of("tipoIdentificacion", "CC",
+                "numeroIdentificacion", "1.222.333.444", "fechaNacimiento", "1988-03-15"));
+        assertThat(id.get("requiereNuevoToken")).isEqualTo(true);
+        t = (String) ok(post("/api/auth/refresh"), null, Map.of("refreshToken", r.get("refreshToken"))).get("token");
+
+        ok(post("/api/conductor/licencia"), t, Map.of("categoriasLicencia", List.of("C1"), "numeroLicencia", "1222333444"));
+        ok(post("/api/conductor/vehiculos"), t, Map.of("tipoVehiculo", "taxi", "placa", "TAX 123", "marca", "Chevrolet",
+                "linea", "Spark GT", "modeloAnio", LocalDate.now().getYear(), "color", "Amarillo",
+                "empresaAfiliadora", "Taxis del Puerto"));
+
+        // Sin todo completo no se puede enviar
+        var antes = llamar(post("/api/conductor/solicitud"), t, Map.of("aceptaCondiciones", true));
+        assertThat(antes.getResponse().getStatus()).isEqualTo(409);
+
+        Map<String, Object> p1 = ok(get("/api/conductor/registro"), t, null);
+        List<Map<String, Object>> faltan = cast(p1.get("faltantes"));
+        // Vehículo del año: la técnico-mecánica todavía no se exige
+        assertThat(faltan).noneMatch(d -> "tecnomecanica".equals(d.get("codigo")));
+        for (Map<String, Object> f : faltan) {
+            var req = multipart("/api/conductor/documentos")
+                    .file(new MockMultipartFile("archivo", f.get("codigo") + ".png", "image/png", PNG))
+                    .param("tipo", (String) f.get("codigo"));
+            if (Boolean.TRUE.equals(f.get("requiere_vencimiento"))) {
+                req.param("fechaVencimiento", LocalDate.now().plusYears(1).toString());
+            }
+            var res = mvc.perform(req.header("Authorization", "Bearer " + t)).andReturn();
+            assertThat(res.getResponse().getStatus()).as(res.getResponse().getContentAsString()).isEqualTo(200);
+        }
+        assertThat(ok(get("/api/conductor/registro"), t, null).get("siguiente")).isEqualTo("enviar");
+
+        ok(post("/api/conductor/solicitud"), t, Map.of("aceptaCondiciones", true));
+        Map<String, Object> p2 = ok(get("/api/conductor/registro"), t, null);
+        assertThat(p2.get("siguiente")).isEqualTo("revision");
+        assertThat(db.queryForObject("SELECT solicitud_enviada_en IS NOT NULL FROM conductores WHERE numero_identificacion = '1222333444'",
+                Boolean.class)).isTrue();
+    }
+
     @Test
     @Order(20)
     void adminApruebaAlConductor() throws Exception {
