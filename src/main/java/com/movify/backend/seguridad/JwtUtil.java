@@ -1,4 +1,4 @@
-package com.movify.backend.seguridad;
+ package com.movify.backend.seguridad;
 
 import java.nio.charset.StandardCharsets;
 import java.security.Key;

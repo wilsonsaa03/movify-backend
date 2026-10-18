@@ -36,9 +36,9 @@ BEGIN
             AS t(nombre, tel, correo, tipo, placa, marca, linea, cats, empresa, cedula) LOOP
 
         PERFORM set_config('movify.actor', 'conductor', true);
-        INSERT INTO usuarios (nombres, apellidos, telefono, telefono_verificado, email, password_hash)
-        VALUES ('Conductor', r.nombre || ' Demo', r.tel, true, r.correo, v_clave) RETURNING id INTO v_moto;
-        INSERT INTO usuario_roles (usuario_id, rol) VALUES (v_moto, 'cliente');
+        -- Sin rol al crearlo: el trigger le da "conductor" cuando queda aprobado (V6)
+        INSERT INTO usuarios (nombres, apellidos, telefono, telefono_verificado, email, password_hash, registrado_como)
+        VALUES ('Conductor', r.nombre || ' Demo', r.tel, true, r.correo, v_clave, 'conductor') RETURNING id INTO v_moto;
         INSERT INTO conductores (usuario_id, tipo_identificacion, numero_identificacion, fecha_nacimiento, categorias_licencia)
         VALUES (v_moto, 'CC', r.cedula, DATE '1990-01-01', r.cats::VARCHAR(2)[]);
         INSERT INTO vehiculos (conductor_id, tipo_vehiculo, placa, marca, linea, modelo_anio, color, empresa_afiliadora)

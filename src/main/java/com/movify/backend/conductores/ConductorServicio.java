@@ -52,8 +52,8 @@ public class ConductorServicio {
     }
 
     /**
-     * Crea el perfil (estado "pendiente"; la BD le asigna el rol conductor) o lo corrige si estaba
-     * rechazado. Como el rol nuevo no está en el JWT actual, la app debe pedir /api/auth/refresh.
+     * Crea el perfil (estado "pendiente", todavía sin rol conductor: la BD se lo asigna cuando el admin
+     * lo aprueba) o lo corrige si estaba rechazado.
      */
     @Transactional
     public Map<String, Object> guardarPerfil(Long usuarioId, PerfilConductorRequest req) {
@@ -68,7 +68,7 @@ public class ConductorServicio {
                                              categorias_licencia)
                     VALUES (?, ?, ?, ?, ?::varchar(2)[])
                     """, usuarioId, req.tipoIdentificacion(), numero, req.fechaNacimiento(), arreglo);
-            return Map.of("message", "Perfil de conductor creado. Ahora registra tu vehículo.", "requiereNuevoToken", true);
+            return Map.of("message", "Perfil de conductor creado. Ahora registra tu vehículo.", "requiereNuevoToken", false);
         }
 
         String estado = estado(usuarioId);
@@ -85,7 +85,7 @@ public class ConductorServicio {
 
     /**
      * Paso 1 "Confirma quién eres": crea el perfil (sin licencia todavía) o corrige los datos.
-     * Al crearlo la BD le asigna el rol conductor, por eso la app pide /api/auth/refresh.
+     * El rol conductor NO se asigna aquí: llega cuando el admin aprueba (V6).
      */
     @Transactional
     public Map<String, Object> guardarIdentidad(Long usuarioId, IdentidadRequest req) {
@@ -96,7 +96,7 @@ public class ConductorServicio {
                     INSERT INTO conductores (usuario_id, tipo_identificacion, numero_identificacion, fecha_nacimiento)
                     VALUES (?, ?, ?, ?)
                     """, usuarioId, req.tipoIdentificacion(), numero, req.fechaNacimiento());
-            return Map.of("message", "Listo. Ahora las fotos de tu documento.", "requiereNuevoToken", true);
+            return Map.of("message", "Listo. Ahora las fotos de tu documento.", "requiereNuevoToken", false);
         }
         exigirNoAprobado(usuarioId);
         db.update("""

@@ -44,8 +44,11 @@ import jakarta.validation.Valid;
 /**
  * Registro y operación del conductor (moto o taxi).
  *
- * Flujo de la app: cuenta (registro-movil) → POST /perfil (identidad + licencia) → /api/auth/refresh
- * (ya tiene rol conductor) → POST /vehiculos → POST /documentos (uno por documento) → el admin aprueba.
+ * Flujo de la app: cuenta (registro-movil, sin roles) → /identidad → /licencia → /vehiculos → /documentos
+ * → /solicitud → el admin aprueba y la BD le asigna el rol conductor (V6) → /api/auth/refresh.
+ *
+ * Los pasos del registro solo piden tener perfil en conductores (aspirante). Operar (conectarse,
+ * enviar ubicación, recibir viajes) sí exige el rol conductor: sesion.conductorId().
  */
 @RestController
 @RequestMapping("/api/conductor")
@@ -66,6 +69,15 @@ public class ConductorControlador {
 
     // ───────────── Registro del conductor (app) ─────────────
 
+    /** Aspirante o conductor: basta con haber creado el perfil (paso de identidad), no hace falta el rol. */
+    private Long perfilPropio() {
+        Long id = sesion.usuarioId();
+        if (!conductores.tienePerfil(id)) {
+            throw new AccesoDenegadoException("Tu cuenta no tiene perfil de conductor");
+        }
+        return id;
+    }
+
     /** Cualquier usuario con sesión puede crear su perfil de conductor (por eso no exige el rol). */
     @PostMapping("/perfil")
     public Map<String, Object> guardarPerfil(@Valid @RequestBody PerfilConductorRequest req) {
@@ -81,14 +93,14 @@ public class ConductorControlador {
     /** Paso 2 de la app: categoría y número de licencia. */
     @PostMapping("/licencia")
     public Map<String, Object> licencia(@Valid @RequestBody LicenciaRequest req) {
-        return conductores.guardarLicencia(sesion.conductorId(), req);
+        return conductores.guardarLicencia(perfilPropio(), req);
     }
 
     /** Paso 5 de la app: "Enviar solicitud". */
     @PostMapping("/solicitud")
     public Map<String, Object> enviarSolicitud(@RequestBody SolicitudRequest req, HttpServletRequest http) {
         ContextoPeticion ctx = ContextoPeticion.de(http);
-        return conductores.enviarSolicitud(sesion.conductorId(), req.aceptaCondiciones(), ctx.ip(), ctx.plataforma());
+        return conductores.enviarSolicitud(perfilPropio(), req.aceptaCondiciones(), ctx.ip(), ctx.plataforma());
     }
 
     /** Paso en el que va el registro del conductor. ?tipo=moto|taxi si todavía no registra el vehículo. */
@@ -100,7 +112,7 @@ public class ConductorControlador {
     /** El conductor ve su propio documento (la app lo muestra como vista previa). */
     @GetMapping("/mis-documentos/{id}/archivo")
     public ResponseEntity<Resource> miDocumento(@PathVariable Long id) {
-        ArchivoServicio.Archivo doc = archivos.obtener(conductores.archivoPropio(sesion.conductorId(), id));
+        ArchivoServicio.Archivo doc = archivos.obtener(conductores.archivoPropio(perfilPropio(), id));
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(doc.contentType()))
                 .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.inline().filename(doc.nombre()).build().toString())
@@ -117,19 +129,19 @@ public class ConductorControlador {
 
     @GetMapping("/vehiculos")
     public Map<String, Object> vehiculo() {
-        Map<String, Object> v = conductores.vehiculoActivo(sesion.conductorId());
+        Map<String, Object> v = conductores.vehiculoActivo(perfilPropio());
         if (v == null) throw new RecursoNoEncontradoException("Todavía no registras tu vehículo");
         return v;
     }
 
     @PostMapping("/vehiculos")
     public Map<String, Object> registrarVehiculo(@Valid @RequestBody VehiculoRequest req) {
-        return conductores.registrarVehiculo(sesion.conductorId(), req);
+        return conductores.registrarVehiculo(perfilPropio(), req);
     }
 
     @GetMapping("/documentos")
     public Map<String, Object> documentos() {
-        Long id = sesion.conductorId();
+        Long id = perfilPropio();
         return Map.of("documentos", conductores.documentos(id), "faltantes", conductores.faltantes(id));
     }
 
@@ -137,12 +149,12 @@ public class ConductorControlador {
     @PostMapping("/documentos")
     public Map<String, Object> subirDocumento(@RequestParam String tipo, @RequestParam MultipartFile archivo,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fechaVencimiento) {
-        return conductores.subirDocumento(sesion.conductorId(), tipo, archivo, fechaVencimiento);
+        return conductores.subirDocumento(perfilPropio(), tipo, archivo, fechaVencimiento);
     }
 
     @PostMapping("/revision")
     public Map<String, Object> reenviarRevision() {
-        return conductores.reenviarRevision(sesion.conductorId());
+        return conductores.reenviarRevision(perfilPropio());
     }
 
     @PostMapping("/disponibilidad")
@@ -154,6 +166,24 @@ public class ConductorControlador {
     public Map<String, Object> ubicacion(@Valid @RequestBody UbicacionRequest req) {
         conductores.ubicacion(sesion.conductorId(), req);
         return Map.of("message", "Ubicación actualizada");
+    }
+
+    /**
+     * "Zonas con más pedidos" del mapa del conductor: origen de los servicios de los últimos 7 días
+     * agrupado en celdas de ~550 m (0,005°). Devuelve el centro de las 6 celdas con más pedidos.
+     */
+    @GetMapping("/zonas-demanda")
+    public List<Map<String, Object>> zonasDemanda() {
+        sesion.conductorId(); // solo conductores
+        return db.queryForList("""
+                SELECT round(avg(origen_lat)::numeric, 5) AS lat, round(avg(origen_lng)::numeric, 5) AS lng,
+                       count(*) AS pedidos
+                FROM servicios
+                WHERE solicitado_en >= now() - INTERVAL '7 days'
+                GROUP BY floor(origen_lat / 0.005), floor(origen_lng / 0.005)
+                ORDER BY pedidos DESC
+                LIMIT 6
+                """);
     }
 
     // ───────────── Rutas que usa la web actual ─────────────

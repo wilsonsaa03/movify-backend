@@ -10,6 +10,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
+import com.movify.backend.comun.Roles;
+
 /** Acceso a usuarios, usuario_roles y permisos efectivos con JdbcTemplate (sin ORM). */
 @Repository
 public class UsuarioRepositorio {
@@ -63,13 +65,32 @@ public class UsuarioRepositorio {
     /** Crea el usuario (estado inicial "activo", lo exige el trigger del catálogo de estados). */
     public Long crear(String nombres, String apellidos, String telefono, boolean telefonoVerificado, String email,
             boolean emailVerificado, String googleSub, String passwordHash, String fotoUrl) {
+        return crear(nombres, apellidos, telefono, telefonoVerificado, email, emailVerificado, googleSub, passwordHash,
+                fotoUrl, Roles.CLIENTE);
+    }
+
+    /** @param registradoComo "cliente" o "conductor" (lo que eligió en la app). */
+    public Long crear(String nombres, String apellidos, String telefono, boolean telefonoVerificado, String email,
+            boolean emailVerificado, String googleSub, String passwordHash, String fotoUrl, String registradoComo) {
         return db.queryForObject("""
                 INSERT INTO usuarios (nombres, apellidos, telefono, telefono_verificado, email, email_verificado,
-                                      google_sub, password_hash, foto_url)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                      google_sub, password_hash, foto_url, registrado_como)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
                 """, Long.class, nombres, apellidos, telefono, telefonoVerificado, email, emailVerificado,
-                googleSub, passwordHash, fotoUrl);
+                googleSub, passwordHash, fotoUrl, registradoComo);
+    }
+
+    /**
+     * Aspirante a conductor: se registró como conductor o ya empezó su perfil. Mientras el admin no
+     * lo apruebe no tiene el rol "conductor" (ni ningún otro si se registró como conductor).
+     */
+    public boolean esAspiranteConductor(Long usuarioId) {
+        Boolean b = db.queryForObject("""
+                SELECT u.registrado_como = 'conductor' OR EXISTS (SELECT 1 FROM conductores c WHERE c.usuario_id = u.id)
+                FROM usuarios u WHERE u.id = ?
+                """, Boolean.class, usuarioId);
+        return Boolean.TRUE.equals(b);
     }
 
     public void asignarRol(Long usuarioId, String rol) {

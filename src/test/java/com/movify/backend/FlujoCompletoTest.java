@@ -117,14 +117,16 @@ class FlujoCompletoTest {
 
         Map<String, Object> p = ok(post("/api/conductor/perfil"), t, Map.of("tipoIdentificacion", "CC",
                 "numeroIdentificacion", "1.111.222.333", "fechaNacimiento", "1990-05-10", "categoriasLicencia", List.of("A2")));
-        assertThat(p.get("requiereNuevoToken")).isEqualTo(true);
+        assertThat(p.get("requiereNuevoToken")).isEqualTo(false);
 
-        // Con el refresh el JWT ya trae el rol conductor
+        // Aspirante en revisión: sin roles en la BD (ni cliente ni conductor), pero la app lo lleva a su registro
         Map<String, Object> nuevo = ok(post("/api/auth/refresh"), null, Map.of("refreshToken", r.get("refreshToken")));
         tokenConductor = (String) nuevo.get("token");
         refreshConductor = (String) nuevo.get("refreshToken");
-        assertThat((List<Object>) nuevo.get("roles")).contains("conductor", "cliente");
+        assertThat((List<Object>) nuevo.get("roles")).isEmpty();
         assertThat(nuevo.get("rol")).isEqualTo("conductor");
+        assertThat(db.queryForObject("SELECT count(*) FROM usuario_roles WHERE usuario_id = ?", Integer.class, idConductor))
+                .isZero();
 
         // Placa de taxi en una moto: la BD la rechaza
         var mala = llamar(post("/api/conductor/vehiculos"), tokenConductor, Map.of("tipoVehiculo", "moto", "placa", "ABC123",
@@ -167,8 +169,7 @@ class FlujoCompletoTest {
 
         Map<String, Object> id = ok(post("/api/conductor/identidad"), t, Map.of("tipoIdentificacion", "CC",
                 "numeroIdentificacion", "1.222.333.444", "fechaNacimiento", "1988-03-15"));
-        assertThat(id.get("requiereNuevoToken")).isEqualTo(true);
-        t = (String) ok(post("/api/auth/refresh"), null, Map.of("refreshToken", r.get("refreshToken"))).get("token");
+        assertThat(id.get("requiereNuevoToken")).isEqualTo(false);
 
         ok(post("/api/conductor/licencia"), t, Map.of("categoriasLicencia", List.of("C1"), "numeroLicencia", "1222333444"));
         ok(post("/api/conductor/vehiculos"), t, Map.of("tipoVehiculo", "taxi", "placa", "TAX 123", "marca", "Chevrolet",
@@ -227,6 +228,14 @@ class FlujoCompletoTest {
         ok(patch("/api/transporte/admin/conductor/" + idConductor + "/estado"), tokenAdmin, Map.of("estado", "aprobado"));
         assertThat(db.queryForObject("SELECT estado FROM conductores WHERE usuario_id = ?", String.class, idConductor))
                 .isEqualTo("aprobado");
+
+        // Al aprobarlo la BD le da el rol conductor (solo ese); con el refresh el JWT ya lo trae
+        assertThat(db.queryForList("SELECT rol FROM usuario_roles WHERE usuario_id = ?", String.class, idConductor))
+                .containsExactly("conductor");
+        Map<String, Object> nuevo = ok(post("/api/auth/refresh"), null, Map.of("refreshToken", refreshConductor));
+        tokenConductor = (String) nuevo.get("token");
+        refreshConductor = (String) nuevo.get("refreshToken");
+        assertThat((List<Object>) nuevo.get("roles")).containsExactly("conductor");
     }
 
     // ───────────────────────── Viaje en moto ─────────────────────────
@@ -287,6 +296,12 @@ class FlujoCompletoTest {
         // Un usuario no puede ver el historial de otro
         assertThat(llamar(get("/api/transporte/servicios/usuario/" + idConductor), tokenCliente, null).getResponse().getStatus())
                 .isEqualTo(403);
+
+        // Zonas con más pedidos (mapa del conductor): el viaje de hoy cuenta; un cliente no puede verlas
+        List<Map<String, Object>> zonas = lista(get("/api/conductor/zonas-demanda"), tokenConductor);
+        assertThat(zonas).isNotEmpty();
+        assertThat(((Number) zonas.get(0).get("pedidos")).intValue()).isPositive();
+        assertThat(llamar(get("/api/conductor/zonas-demanda"), tokenCliente, null).getResponse().getStatus()).isEqualTo(403);
     }
 
     @Test

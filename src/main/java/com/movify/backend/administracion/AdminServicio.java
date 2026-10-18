@@ -145,6 +145,9 @@ public class AdminServicio {
                        CASE WHEN EXISTS (SELECT 1 FROM usuario_roles WHERE usuario_id = u.id AND rol = 'admin') THEN 'admin'
                             WHEN EXISTS (SELECT 1 FROM usuario_roles WHERE usuario_id = u.id AND rol = 'soporte') THEN 'soporte'
                             WHEN EXISTS (SELECT 1 FROM usuario_roles WHERE usuario_id = u.id AND rol = 'conductor') THEN 'conductor'
+                            -- Se registró como conductor y el admin todavía no lo aprueba (V6: sin rol)
+                            WHEN u.registrado_como = 'conductor'
+                              OR EXISTS (SELECT 1 FROM conductores WHERE usuario_id = u.id) THEN 'aspirante'
                             ELSE 'cliente' END AS rol,
                        u.estado, u.motivo_bloqueo, u.calificacion_promedio,
                        TO_CHAR(u.creado_en AT TIME ZONE 'America/Bogota', 'YYYY-MM-DD"T"HH24:MI:SS') AS "fechaRegistro",

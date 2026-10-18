@@ -204,6 +204,12 @@ public class AutenticacionServicio {
         Set<String> roles = usuarios.roles(u.id());
         Set<String> permisos = usuarios.permisos(u.id());
         String rol = Roles.principal(roles);
+        // Aspirante a conductor sin aprobar: no tiene el rol en la BD (ni permisos de conductor),
+        // pero la app debe llevarlo a su registro de conductor y no al inicio del cliente.
+        if (!roles.contains(Roles.ADMIN) && !roles.contains(Roles.SOPORTE) && !roles.contains(Roles.CONDUCTOR)
+                && usuarios.esAspiranteConductor(u.id())) {
+            rol = Roles.CONDUCTOR;
+        }
 
         Map<String, Object> r = new HashMap<>();
         r.put("token", jwt.generarAcceso(u.id(), u.email(), rol, roles, permisos));
@@ -241,11 +247,12 @@ public class AutenticacionServicio {
         }
         exigirClaveSegura(req.clave());
 
+        boolean conductor = Roles.CONDUCTOR.equals(req.rol());
         Long id = usuarios.crear(capitalizar(req.nombres()), capitalizar(req.apellidos()), tel, true, email, false,
-                null, encoder.encode(req.clave()), null);
-        // Toda cuenta nace como cliente. El rol conductor lo pone la BD (trigger) cuando
-        // la persona crea su perfil de conductor con identificación y licencia.
-        usuarios.asignarRol(id, Roles.CLIENTE);
+                null, encoder.encode(req.clave()), null, conductor ? Roles.CONDUCTOR : Roles.CLIENTE);
+        // El cliente nace con su rol. El aspirante a conductor nace SIN roles: el rol "conductor"
+        // lo pone la BD (trigger) cuando el admin aprueba su perfil (V6).
+        if (!conductor) usuarios.asignarRol(id, Roles.CLIENTE);
         // Prueba de la autorización de tratamiento de datos (Ley 1581): una fila por documento vigente
         db.update("""
                 INSERT INTO aceptaciones_legales (usuario_id, documento_id, ip_origen, plataforma)
@@ -257,7 +264,7 @@ public class AutenticacionServicio {
         Usuario u = usuarios.porId(id).orElseThrow();
         accesos.registrarExito(id, tel, "sms", ctx);
         Map<String, Object> r = respuestaSesion(u, "sms", ctx);
-        r.put("siguientePaso", "conductor".equals(req.rol()) ? "documentos_conductor" : "inicio");
+        r.put("siguientePaso", conductor ? "documentos_conductor" : "inicio");
         return r;
     }
 
