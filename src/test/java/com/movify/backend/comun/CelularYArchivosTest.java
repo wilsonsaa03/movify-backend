@@ -26,4 +26,15 @@ class CelularYArchivosTest {
         assertEquals("webp", ArchivoServicio.extensionPorFirma("RIFF0000WEBP".getBytes()));
         assertNull(ArchivoServicio.extensionPorFirma("<html><script>".getBytes()));
     }
+
+    @Test
+    void reconoceNotasDeVozYNoLasConfundeConFotos() {
+        byte[] webm = { 0x1A, 0x45, (byte) 0xDF, (byte) 0xA3, 0, 0, 0, 0 };
+        assertEquals("webm", ArchivoServicio.extensionAudio(webm));
+        assertEquals("ogg", ArchivoServicio.extensionAudio("OggS\0\2\0\0".getBytes()));
+        assertEquals("m4a", ArchivoServicio.extensionAudio("\0\0\0\u0018ftypM4A ".getBytes()));
+        assertNull(ArchivoServicio.extensionAudio("%PDF-1.7".getBytes()));
+        // Un audio nunca pasa como foto o documento
+        assertNull(ArchivoServicio.extensionPorFirma(webm));
+    }
 }

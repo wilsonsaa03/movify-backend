@@ -4,6 +4,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
+import org.springframework.core.io.Resource;
+import org.springframework.http.CacheControl;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -15,8 +18,10 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 import com.movify.backend.comun.AccesoDenegadoException;
+import com.movify.backend.comun.ArchivoServicio;
 import com.movify.backend.comun.Datos;
 import com.movify.backend.seguridad.SesionActual;
 import com.movify.backend.servicios.ServicioDtos.CambioEstadoRequest;
@@ -37,6 +42,7 @@ import jakarta.validation.constraints.Min;
  *   POST /api/servicios/{id}/estado     aceptar, llegué, iniciar, finalizar, cancelar
  *   POST /api/servicios/{id}/calificar  1 a 5 estrellas
  *   GET  /api/servicios/{id}/historial  línea de tiempo del servicio
+ *   GET/POST /api/servicios/{id}/nota-voz  nota de voz del punto de referencia
  *   GET/POST /api/servicios/{id}/mensajes  chat cliente ↔ conductor
  */
 @RestController
@@ -47,12 +53,15 @@ public class ServicioControlador {
     private final SesionActual sesion;
     private final ViajeServicio viajes;
     private final EstadisticasServicio estadisticas;
+    private final ArchivoServicio archivos;
 
-    public ServicioControlador(JdbcTemplate db, SesionActual sesion, ViajeServicio viajes, EstadisticasServicio estadisticas) {
+    public ServicioControlador(JdbcTemplate db, SesionActual sesion, ViajeServicio viajes, EstadisticasServicio estadisticas,
+            ArchivoServicio archivos) {
         this.db = db;
         this.sesion = sesion;
         this.viajes = viajes;
         this.estadisticas = estadisticas;
+        this.archivos = archivos;
     }
 
     @PostMapping
@@ -105,6 +114,23 @@ public class ServicioControlador {
                 SELECT creado_en, estado_anterior, estado_nuevo, estado_nombre, color, actor_rol, motivo
                 FROM v_historial_servicios WHERE servicio_id = ? ORDER BY creado_en
                 """, id);
+    }
+
+    // ───────────── Nota de voz del punto de referencia ─────────────
+
+    /** multipart: audio (webm/ogg/m4a, máx. 2 MB) y segundos (1 a 60). */
+    @PostMapping("/{id}/nota-voz")
+    public Map<String, Object> subirNotaVoz(@PathVariable Long id, @RequestParam("audio") MultipartFile audio,
+            @RequestParam(defaultValue = "1") int segundos) {
+        return viajes.guardarNotaVoz(id, archivos, audio, segundos);
+    }
+
+    @GetMapping("/{id}/nota-voz")
+    public ResponseEntity<Resource> notaVoz(@PathVariable Long id) {
+        ArchivoServicio.Archivo a = viajes.notaVoz(id, archivos);
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType(a.contentType()))
+                .cacheControl(CacheControl.noStore())
+                .header("X-Content-Type-Options", "nosniff").body(a.recurso());
     }
 
     // ───────────── Chat ─────────────

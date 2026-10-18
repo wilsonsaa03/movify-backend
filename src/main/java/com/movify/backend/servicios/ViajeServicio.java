@@ -17,7 +17,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.springframework.web.multipart.MultipartFile;
+
 import com.movify.backend.comun.AccesoDenegadoException;
+import com.movify.backend.comun.ArchivoServicio;
 import com.movify.backend.comun.ActorBd;
 import com.movify.backend.comun.Celular;
 import com.movify.backend.comun.Datos;
@@ -220,9 +223,10 @@ public class ViajeServicio {
                        v.tipo_vehiculo, v.descripcion, v.origen_lat, v.origen_lng, v.destino_lat, v.destino_lng,
                        v.origen, v.destino, v.origen_referencia, v.distancia_km, v.duracion_estimada_min,
                        v.valor_estimado AS tarifa, v.pasajeros, o.distancia_km AS distancia_al_origen_km,
-                       v.usuario_nombre, v.expira_busqueda_en, v.estado
+                       v.usuario_nombre, v.expira_busqueda_en, v.estado, s.nota_voz_segundos
                 FROM servicio_ofertas o
                 JOIN v_servicios_api v ON v.id = o.servicio_id
+                JOIN servicios s ON s.id = o.servicio_id
                 WHERE o.conductor_id = ? AND o.estado IN ('enviada', 'vista')
                   AND v.estado_codigo = 'buscando' AND v.expira_busqueda_en > now()
                 ORDER BY o.distancia_km, v.solicitado_en
@@ -269,6 +273,13 @@ public class ViajeServicio {
                     WHERE servicio_id = ? ORDER BY id
                     """, servicioId));
         }
+        // Para la tarjeta del pasajero en la solicitud (estrellas y "VERIFICADA") y la nota de voz del punto de referencia
+        db.queryForList("""
+                SELECT u.calificacion_promedio AS usuario_calificacion, u.telefono_verificado AS usuario_verificado,
+                       s.nota_voz_segundos
+                FROM servicios s JOIN usuarios u ON u.id = s.cliente_id
+                WHERE s.id = ?
+                """, servicioId).stream().findFirst().ifPresent(s::putAll);
         // El celular del cliente solo lo ve el conductor asignado (y el personal), no quien recibe la oferta
         if (!soyCliente && !sesion.esPersonal() && !Objects.equals(conductorId, yo.id())) s.remove("usuario_telefono");
         s.remove("usuario_id");
@@ -447,6 +458,35 @@ public class ViajeServicio {
     }
 
     // ═════════════════════════════ Utilidades ═════════════════════════════
+
+    // ═════════════════════════════ Nota de voz ═════════════════════════════
+
+    /** Solo quien pidió el servicio, mientras se busca conductor. Reemplaza la anterior si había. */
+    @Transactional
+    public Map<String, Object> guardarNotaVoz(Long servicioId, ArchivoServicio archivos, MultipartFile audio, int segundos) {
+        Map<String, Object> s = db.queryForList(
+                "SELECT cliente_id, estado, nota_voz_archivo FROM servicios WHERE id = ? FOR UPDATE", servicioId)
+                .stream().findFirst().orElseThrow(() -> new RecursoNoEncontradoException("Servicio no encontrado"));
+        if (!Objects.equals(Datos.aLong(s.get("cliente_id")), sesion.usuarioId())) {
+            throw new AccesoDenegadoException("Solo quien pidió el servicio puede agregar la nota de voz");
+        }
+        if (!BUSCANDO.equals(s.get("estado")) && !ASIGNADO.equals(s.get("estado"))) {
+            throw new ReglaNegocioException(400, "El servicio ya no admite notas de voz");
+        }
+        ArchivoServicio.Guardado g = archivos.guardarAudio(audio, "nota_voz");
+        db.update("UPDATE servicios SET nota_voz_archivo = ?, nota_voz_segundos = ? WHERE id = ?",
+                g.nombre(), Math.max(1, Math.min(60, segundos)), servicioId);
+        archivos.borrar((String) s.get("nota_voz_archivo"));
+        return Map.of("message", "Nota de voz guardada", "segundos", Math.max(1, Math.min(60, segundos)));
+    }
+
+    /** La escuchan el cliente, el conductor asignado y los conductores a los que se les ofreció (mismas reglas que obtener). */
+    public ArchivoServicio.Archivo notaVoz(Long servicioId, ArchivoServicio archivos) {
+        obtener(servicioId); // valida que pueda verlo
+        String nombre = db.queryForObject("SELECT nota_voz_archivo FROM servicios WHERE id = ?", String.class, servicioId);
+        if (nombre == null) throw new RecursoNoEncontradoException("Este servicio no tiene nota de voz");
+        return archivos.obtener(nombre);
+    }
 
     Map<String, Object> fila(Long id) {
         return db.queryForList("SELECT * FROM v_servicios_api WHERE id = ?", id).stream().findFirst()

@@ -267,6 +267,23 @@ class FlujoCompletoTest {
         Map<String, Object> antes = ok(get("/api/transporte/servicio/" + idServicio), tokenConductor, null);
         assertThat(antes).doesNotContainKey("usuario_telefono");
 
+        // Nota de voz del punto de referencia: la sube el cliente y la escucha el conductor que recibió la oferta
+        byte[] webm = { 0x1A, 0x45, (byte) 0xDF, (byte) 0xA3, 1, 2, 3, 4, 5, 6, 7, 8 };
+        var nota = mvc.perform(multipart("/api/servicios/" + idServicio + "/nota-voz")
+                .file(new MockMultipartFile("audio", "nota.webm", "audio/webm", webm)).param("segundos", "8")
+                .header("Authorization", "Bearer " + tokenCliente)).andReturn();
+        assertThat(nota.getResponse().getStatus()).as(nota.getResponse().getContentAsString()).isEqualTo(200);
+        var noEsSuya = mvc.perform(multipart("/api/servicios/" + idServicio + "/nota-voz")
+                .file(new MockMultipartFile("audio", "nota.webm", "audio/webm", webm))
+                .header("Authorization", "Bearer " + tokenConductor)).andReturn();
+        assertThat(noEsSuya.getResponse().getStatus()).isEqualTo(403);
+        var escuchar = llamar(get("/api/servicios/" + idServicio + "/nota-voz"), tokenConductor, null);
+        assertThat(escuchar.getResponse().getStatus()).isEqualTo(200);
+        assertThat(escuchar.getResponse().getContentType()).isEqualTo("audio/webm");
+        Map<String, Object> conNota = ok(get("/api/servicios/" + idServicio), tokenConductor, null);
+        assertThat(((Number) conNota.get("nota_voz_segundos")).intValue()).isEqualTo(8);
+        assertThat(conNota).containsKeys("usuario_calificacion", "usuario_verificado");
+
         ok(patch("/api/transporte/servicio/" + idServicio + "/estado"), tokenConductor, Map.of("estado", "ACEPTADO"));
         Map<String, Object> visto = ok(get("/api/transporte/servicio/" + idServicio), tokenCliente, null);
         assertThat(visto.get("estado")).isEqualTo("ACEPTADO");

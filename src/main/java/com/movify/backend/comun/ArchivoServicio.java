@@ -30,12 +30,17 @@ public class ArchivoServicio {
 
     /** Lo mismo que permite documentos_conductor.tamano_bytes (10 MB). */
     public static final long MAX_BYTES = 10L * 1024 * 1024;
-    private static final Pattern NOMBRE_VALIDO = Pattern.compile("^[a-z_]+_[0-9a-f\\-]{36}\\.(pdf|jpg|png|webp)$");
+    /** Notas de voz: 60 s en webm/opus pesan ~500 KB; 2 MB deja margen sin permitir abusos. */
+    public static final long MAX_BYTES_AUDIO = 2L * 1024 * 1024;
+    private static final Pattern NOMBRE_VALIDO = Pattern.compile("^[a-z_]+_[0-9a-f\\-]{36}\\.(pdf|jpg|png|webp|webm|ogg|m4a)$");
     private static final Map<String, String> TIPOS = Map.of(
             "pdf", "application/pdf",
             "jpg", "image/jpeg",
             "png", "image/png",
-            "webp", "image/webp");
+            "webp", "image/webp",
+            "webm", "audio/webm",
+            "ogg", "audio/ogg",
+            "m4a", "audio/mp4");
 
     private final Path directorio;
 
@@ -79,6 +84,37 @@ public class ArchivoServicio {
         }
     }
 
+    /**
+     * Nota de voz grabada en el celular: webm/opus (Android, Chrome), ogg (Firefox) o mp4/m4a (iPhone).
+     * Igual que con las fotos, el tipo se decide por los primeros bytes, no por el nombre.
+     */
+    public Guardado guardarAudio(MultipartFile archivo, String prefijo) {
+        if (archivo == null || archivo.isEmpty()) {
+            throw new ReglaNegocioException(400, "Falta la nota de voz");
+        }
+        if (archivo.getSize() > MAX_BYTES_AUDIO) {
+            throw new ReglaNegocioException(413, "La nota de voz es muy larga");
+        }
+        try {
+            byte[] cabecera;
+            try (InputStream in = archivo.getInputStream()) {
+                cabecera = in.readNBytes(12);
+            }
+            String extension = extensionAudio(cabecera);
+            if (extension == null) {
+                throw new ReglaNegocioException(415, "La nota de voz debe ser WEBM, OGG o M4A");
+            }
+            Files.createDirectories(directorio);
+            String nombre = prefijo + "_" + UUID.randomUUID() + "." + extension;
+            try (InputStream in = archivo.getInputStream()) {
+                Files.copy(in, directorio.resolve(nombre), StandardCopyOption.REPLACE_EXISTING);
+            }
+            return new Guardado(nombre, TIPOS.get(extension), archivo.getSize(), null);
+        } catch (IOException e) {
+            throw new IllegalStateException("No se pudo guardar la nota de voz", e);
+        }
+    }
+
     public Archivo obtener(String nombre) {
         if (nombre == null || !NOMBRE_VALIDO.matcher(nombre).matches()) {
             throw new RecursoNoEncontradoException("Archivo no encontrado");
@@ -89,7 +125,9 @@ public class ArchivoServicio {
         }
         String tipo;
         try (InputStream in = Files.newInputStream(ruta)) {
-            String ext = extensionPorFirma(in.readNBytes(12));
+            byte[] cabecera = in.readNBytes(12);
+            String ext = extensionPorFirma(cabecera);
+            if (ext == null) ext = extensionAudio(cabecera);
             tipo = ext == null ? "application/octet-stream" : TIPOS.get(ext);
         } catch (IOException e) {
             throw new RecursoNoEncontradoException("Archivo no encontrado");
@@ -120,6 +158,14 @@ public class ArchivoServicio {
         if (empiezaCon(b, 0, 0xFF, 0xD8, 0xFF)) return "jpg";
         if (empiezaCon(b, 0, 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)) return "png";
         if (empiezaCon(b, 0, 0x52, 0x49, 0x46, 0x46) && empiezaCon(b, 8, 0x57, 0x45, 0x42, 0x50)) return "webp"; // RIFF....WEBP
+        return null;
+    }
+
+    /** Aparte de extensionPorFirma a propósito: un audio nunca debe pasar como foto o documento. */
+    static String extensionAudio(byte[] b) {
+        if (empiezaCon(b, 0, 0x1A, 0x45, 0xDF, 0xA3)) return "webm"; // EBML (Matroska/WebM)
+        if (empiezaCon(b, 0, 0x4F, 0x67, 0x67, 0x53)) return "ogg";  // OggS
+        if (empiezaCon(b, 4, 0x66, 0x74, 0x79, 0x70)) return "m4a";  // ....ftyp (MP4/M4A)
         return null;
     }
 
