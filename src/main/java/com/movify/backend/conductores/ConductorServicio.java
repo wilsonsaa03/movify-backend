@@ -132,6 +132,7 @@ public class ConductorServicio {
         Map<String, Object> p = progresoRegistro(usuarioId, null);
         String siguiente = String.valueOf(p.get("siguiente"));
         if ("aprobado".equals(siguiente)) throw new ReglaNegocioException("Tu cuenta de conductor ya está aprobada");
+        exigirPuedeReenviar(p);
         List<?> faltan = (List<?>) p.get("faltantes");
         if (!faltan.isEmpty() || List.of("identidad", "licencia", "vehiculo", "documentos").contains(siguiente)) {
             String nombres = faltan.stream().map(f -> String.valueOf(((Map<?, ?>) f).get("nombre"))).limit(3)
@@ -167,9 +168,26 @@ public class ConductorServicio {
         if (!"rechazado".equals(estado) && !"suspendido".equals(estado)) {
             throw new ReglaNegocioException("Tu perfil ya está " + nombreEstado(estado).toLowerCase(Locale.ROOT) + ".");
         }
+        exigirPuedeReenviar(progresoRegistro(usuarioId, null));
         actor.declarar(usuarioId, ActorBd.CONDUCTOR);
         db.update("UPDATE conductores SET estado = 'pendiente', motivo_estado = NULL WHERE usuario_id = ?", usuarioId);
         return Map.of("message", "Enviamos tu perfil a revisión de nuevo", "estado", "pendiente");
+    }
+
+    /**
+     * Suspendido: solo soporte lo reactiva (antes el conductor podía pasarse solo a "pendiente").
+     * Rechazado: tiene que corregir algo antes de pedir revisión otra vez.
+     */
+    private void exigirPuedeReenviar(Map<String, Object> progreso) {
+        String estado = String.valueOf(progreso.get("estado"));
+        if ("suspendido".equals(estado)) {
+            throw new ReglaNegocioException("Tu cuenta está suspendida. Escríbenos a soporte para revisar tu caso.");
+        }
+        if ("rechazado".equals(estado) && !Boolean.TRUE.equals(progreso.get("corregido"))) {
+            Object motivo = progreso.get("motivo_estado");
+            throw new ReglaNegocioException("Primero corrige lo que te indicamos"
+                    + (motivo == null ? "" : ": " + motivo) + ". Luego vuelve a enviar tu solicitud.");
+        }
     }
 
     /** Todo lo que necesita la pantalla del conductor (perfil, vehículo, documentos y qué falta). */
@@ -195,7 +213,8 @@ public class ConductorServicio {
      * En qué paso va el registro del conductor (la app lo usa para saber qué pantalla abrir).
      * Funciona aunque todavía no tenga perfil.
      *
-     * siguiente: identidad → licencia → vehiculo → documentos → enviar → revision · corregir · aprobado
+     * siguiente: identidad → licencia → vehiculo → documentos → enviar → revision · corregir · suspendido · aprobado
+     * corregido: si lo rechazaron, ya cambió algo desde entonces (puede volver a enviar).
      */
     public Map<String, Object> progresoRegistro(Long usuarioId, String tipoElegido) {
         Map<String, Object> r = new HashMap<>();
@@ -223,6 +242,8 @@ public class ConductorServicio {
         String siguiente;
         if (!perfil || !pasoCompleto(requeridos, listos, "identidad")) siguiente = "identidad";
         else if ("aprobado".equals(estado)) siguiente = "aprobado";
+        // Suspendido por el admin: no se corrige desde la app, se habla con soporte (antes caía en "revision")
+        else if ("suspendido".equals(estado)) siguiente = "suspendido";
         else if (conductor.get("solicitud_enviada_en") != null && ("rechazado".equals(estado) || rechazados)) siguiente = "corregir";
         else if (categorias.isBlank() || !pasoCompleto(requeridos, listos, "licencia")) siguiente = "licencia";
         else if (vehiculo == null || !pasoCompleto(requeridos, listos, "vehiculo")) siguiente = "vehiculo";
@@ -241,12 +262,40 @@ public class ConductorServicio {
         }
         r.put("estado", estado);
         r.put("motivo_estado", conductor == null ? null : conductor.get("motivo_estado"));
+        // Pantalla "Solicitud rechazada": cuándo se rechazó y si ya corrigió algo desde entonces
+        Map<String, Object> rechazo = perfil ? rechazo(usuarioId) : Map.of();
+        r.put("rechazado_en", rechazo.get("rechazado_en"));
+        r.put("corregido", perfil && corregido(usuarioId, rechazo, rechazados));
         r.put("tipo_vehiculo", tipo);
         r.put("vehiculo", vehiculo);
         r.put("documentos", documentos);
         r.put("requeridos", requeridos);
         r.put("faltantes", requeridos.stream().filter(t -> !listos.contains(String.valueOf(t.get("codigo")))).toList());
         return r;
+    }
+
+    /** Último rechazo o suspensión del conductor (historial_estados), o vacío si nunca lo rechazaron. */
+    private Map<String, Object> rechazo(Long usuarioId) {
+        return db.queryForList("""
+                SELECT creado_en AS rechazado_en, estado_nuevo FROM historial_estados
+                WHERE ambito = 'conductor' AND registro_id = ? AND estado_nuevo IN ('rechazado', 'suspendido')
+                ORDER BY creado_en DESC LIMIT 1
+                """, usuarioId).stream().findFirst().orElse(Map.of());
+    }
+
+    /**
+     * ¿Ya corrigió? No le quedan documentos rechazados y, si el admin rechazó la solicitud, cambió algo después:
+     * subió un documento o editó sus datos o los del vehículo. Así "reenviar" no borra el rechazo sin corregir nada.
+     */
+    private boolean corregido(Long usuarioId, Map<String, Object> rechazo, boolean quedanRechazados) {
+        if (quedanRechazados) return false;
+        Object cuando = rechazo.get("rechazado_en");
+        if (cuando == null) return true;
+        return Boolean.TRUE.equals(db.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM documentos_conductor WHERE conductor_id = ? AND creado_en > ?)
+                    OR EXISTS (SELECT 1 FROM vehiculos WHERE conductor_id = ? AND actualizado_en > ?)
+                    OR EXISTS (SELECT 1 FROM conductores WHERE usuario_id = ? AND actualizado_en > ?)
+                """, Boolean.class, usuarioId, cuando, usuarioId, cuando, usuarioId, cuando));
     }
 
     private static boolean pasoCompleto(List<Map<String, Object>> requeridos, List<String> listos, String paso) {
