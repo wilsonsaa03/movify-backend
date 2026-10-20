@@ -44,6 +44,7 @@ public class ManejadorErrores {
             Map.entry("ux_usuarios_google_sub", "Esa cuenta de Google ya está vinculada a otro usuario."),
             Map.entry("ux_conductores_identificacion", "Ese documento de identidad ya está registrado por otro conductor."),
             Map.entry("ux_vehiculos_placa", "Esa placa ya está registrada."),
+            Map.entry("tipos_documento_pkey", "Ya existe un tipo de documento con ese código."),
             Map.entry("ux_servicios_un_activo_por_conductor", "Ya tienes un servicio en curso."),
             Map.entry("ux_servicios_transporte_activo_por_cliente", "Ya tienes un viaje en curso. Termínalo o cancélalo antes de pedir otro."),
             Map.entry("ux_calificaciones_una_por_servicio", "Ya calificaste este servicio."),

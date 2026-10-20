@@ -113,6 +113,28 @@ public class SeguridadPersonalControlador {
                 """, sesion.usuarioId());
     }
 
+    /**
+     * Un reporte propio con el viaje al que se refiere y la otra persona del viaje
+     * (si quien reporta es el conductor, es el pasajero; si es el cliente, el conductor).
+     */
+    @GetMapping("/pqrs/{id}")
+    @PreAuthorize("hasAuthority('pqrs.ver_propias')")
+    public Map<String, Object> miPqrs(@PathVariable Long id) {
+        return db.queryForList("""
+                SELECT t.id, t.tipo, t.asunto, t.estado, e.nombre AS estado_nombre,
+                       t.servicio_id, t.fecha_limite_respuesta, t.creado_en,
+                       COALESCE(s.valor_final, s.valor_estimado) AS valor,
+                       COALESCE(s.finalizado_en, s.solicitado_en) AS fecha_viaje,
+                       o.nombres AS otro_nombres, o.apellidos AS otro_apellidos
+                FROM tickets_soporte t
+                JOIN estados e ON e.ambito = 'ticket' AND e.codigo = t.estado
+                LEFT JOIN servicios s ON s.id = t.servicio_id
+                LEFT JOIN usuarios o ON o.id = CASE WHEN s.cliente_id = t.usuario_id THEN s.conductor_id ELSE s.cliente_id END
+                WHERE t.id = ? AND t.usuario_id = ?
+                """, id, sesion.usuarioId())
+                .stream().findFirst().orElseThrow(() -> new RecursoNoEncontradoException("Reporte no encontrado"));
+    }
+
     /** Si la respuesta le sirvió la cierra; si no, la reabre (resuelto → en_proceso). */
     @PostMapping("/pqrs/{id}/{accion:cerrar|reabrir}")
     @Transactional

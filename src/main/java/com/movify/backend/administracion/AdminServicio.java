@@ -242,7 +242,7 @@ public class AdminServicio {
 
     // ───────────── Auditoría ─────────────
 
-    private void auditar(String accion, String entidad, Long entidadId, Map<String, Object> detalle) {
+    void auditar(String accion, String entidad, Long entidadId, Map<String, Object> detalle) {
         String d;
         try {
             d = json.writeValueAsString(detalle);

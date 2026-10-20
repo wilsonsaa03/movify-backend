@@ -1,10 +1,12 @@
 package com.movify.backend;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -377,6 +379,52 @@ class FlujoCompletoTest {
         assertThat(resumen).containsKey("totales");
         assertThat(mvc.perform(get("/api/test/ping")).andReturn().getResponse().getContentAsString()).startsWith("pong");
         assertThat(ok(get("/api/catalogos"), null, null)).containsKeys("estados", "tipos_documento");
+    }
+
+    // ───────────────────────── Datos básicos (CRUD del admin) ─────────────────────────
+
+    @Test
+    @Order(65)
+    void adminMantieneLosDatosBasicos() throws Exception {
+        String base = "/api/admin/catalogos/tipos-documento";
+        Map<String, Object> nuevo = ok(post(base), tokenAdmin, Map.of("codigo", "certificado_curso", "nombre",
+                "Certificado de curso de manejo", "aplicaA", "conductor"));
+        assertThat(nuevo.get("paso")).isEqualTo("documentos");
+        assertThat(lista(get(base), tokenAdmin)).anyMatch(t -> "certificado_curso".equals(t.get("codigo")));
+
+        ok(put(base + "/certificado_curso"), tokenAdmin, Map.of("nombre", "Curso de manejo defensivo",
+                "aplicaA", "conductor", "obligatorioMoto", true));
+        assertThat(db.queryForObject("SELECT nombre FROM tipos_documento WHERE codigo = 'certificado_curso'", String.class))
+                .isEqualTo("Curso de manejo defensivo");
+
+        // 400: falta el nombre, no se guarda nada
+        var incompleto = llamar(post(base), tokenAdmin, Map.of("codigo", "sin_nombre", "aplicaA", "conductor"));
+        assertThat(incompleto.getResponse().getStatus()).isEqualTo(400);
+        assertThat(db.queryForObject("SELECT count(*) FROM tipos_documento WHERE codigo = 'sin_nombre'", Integer.class)).isZero();
+
+        // 409: lo usa la app; 404: no existe
+        assertThat(llamar(delete(base + "/soat"), tokenAdmin, null).getResponse().getStatus()).isEqualTo(409);
+        assertThat(llamar(get(base + "/no_existe"), tokenAdmin, null).getResponse().getStatus()).isEqualTo(404);
+        assertThat(llamar(put(base + "/no_existe"), tokenAdmin, Map.of("nombre", "X", "aplicaA", "vehiculo"))
+                .getResponse().getStatus()).isEqualTo(404);
+        assertThat(llamar(delete(base + "/no_existe"), tokenAdmin, null).getResponse().getStatus()).isEqualTo(404);
+
+        ok(delete(base + "/certificado_curso"), tokenAdmin, null);
+        assertThat(db.queryForObject("SELECT count(*) FROM tipos_documento WHERE codigo = 'certificado_curso'", Integer.class)).isZero();
+
+        // Motivos de cancelación
+        String motivos = "/api/admin/catalogos/motivos-cancelacion";
+        Map<String, Object> m = ok(post(motivos), tokenAdmin, Map.of("actor", "cliente", "descripcion", "Pedí por error"));
+        long id = ((Number) m.get("id")).longValue();
+        ok(put(motivos + "/" + id), tokenAdmin, Map.of("actor", "cliente", "descripcion", "Lo pedí por error", "activo", false));
+        assertThat(ok(get(motivos + "/" + id), tokenAdmin, null).get("activo")).isEqualTo(false);
+        assertThat(llamar(post(motivos), tokenAdmin, Map.of("actor", "otro", "descripcion", "X")).getResponse().getStatus())
+                .isEqualTo(400);
+        ok(delete(motivos + "/" + id), tokenAdmin, null);
+        assertThat(llamar(get(motivos + "/" + id), tokenAdmin, null).getResponse().getStatus()).isEqualTo(404);
+
+        // Un cliente no entra
+        assertThat(llamar(get(motivos), tokenCliente, null).getResponse().getStatus()).isEqualTo(403);
     }
 
     @Test
