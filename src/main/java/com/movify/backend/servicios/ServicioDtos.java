@@ -60,7 +60,9 @@ public final class ServicioDtos {
             @Size(max = 10) String tamano,
             @Size(max = 10) @JsonProperty("peso_kg") String pesoKg,
             Boolean fragil,
-            @JsonProperty("valor_declarado") BigDecimal valorDeclarado) {
+            @JsonProperty("valor_declarado") BigDecimal valorDeclarado,
+            /** true = el conductor le cobra a quien recibe (V11). */
+            @JsonProperty("paga_destinatario") Boolean pagaDestinatario) {
     }
 
     public record ItemDomicilio(

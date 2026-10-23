@@ -1,12 +1,10 @@
-package com.movify.backend.servicios;
+package com.movify.backend.conductores;
 
 import java.util.List;
 import java.util.Map;
 
 import org.springframework.http.ResponseEntity;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -15,55 +13,35 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.movify.backend.comun.Datos;
-import com.movify.backend.conductores.ConductorDtos;
-import com.movify.backend.conductores.ConductorServicio;
 import com.movify.backend.seguridad.SesionActual;
-import com.movify.backend.servicios.ServicioDtos.CalificacionRequest;
-import com.movify.backend.servicios.ServicioDtos.CambioEstadoRequest;
-import com.movify.backend.servicios.ServicioDtos.SolicitudRequest;
+import com.movify.backend.servicios.EstadisticasServicio;
 import com.movify.backend.servicios.ServicioDtos.UbicacionRequest;
+import com.movify.backend.servicios.ViajeServicio;
 
 import jakarta.validation.Valid;
 
 /**
- * Rutas /api/transporte que usa la web Angular. Mantienen los mismos nombres y campos
- * de antes, pero ahora trabajan sobre el modelo v2.3 (servicios, ofertas, ubicacion_conductores).
- * Todo id que llega por URL se valida contra el token.
+ * El conductor en el día a día (rutas /api/transporte que ya usa la web): conectarse, enviar el GPS,
+ * ver solicitudes, ganancias e historial. Todo id que llega por URL se valida contra el token.
  */
 @RestController
 @RequestMapping("/api/transporte")
-public class TransporteControlador {
+public class ConductorViajesControlador {
 
-    private final JdbcTemplate db;
     private final SesionActual sesion;
+    private final ConductorServicio conductores;
     private final ViajeServicio viajes;
     private final EstadisticasServicio estadisticas;
-    private final ConductorServicio conductores;
 
-    public TransporteControlador(JdbcTemplate db, SesionActual sesion, ViajeServicio viajes,
-            EstadisticasServicio estadisticas, ConductorServicio conductores) {
-        this.db = db;
+    public ConductorViajesControlador(SesionActual sesion, ConductorServicio conductores, ViajeServicio viajes,
+            EstadisticasServicio estadisticas) {
         this.sesion = sesion;
+        this.conductores = conductores;
         this.viajes = viajes;
         this.estadisticas = estadisticas;
-        this.conductores = conductores;
     }
 
-    // ───────────── Mapa ─────────────
-
-    /** Solo posición: el cliente no necesita nombre ni foto de conductores que no le fueron asignados. */
-    @GetMapping("/conductores-activos")
-    public List<Map<String, Object>> conductoresActivos(@RequestParam(required = false) String tipoVehiculo) {
-        return db.queryForList("""
-                SELECT usuario_id AS conductor_id, lat AS latitud, lng AS longitud, true AS en_linea, tipo_vehiculo
-                FROM v_conductores_en_linea
-                WHERE NOT ocupado
-                  AND actualizado_en > now() - make_interval(secs => fn_config_num('ubicacion_vigencia_seg', 300)::int)
-                  AND (CAST(? AS varchar) IS NULL OR tipo_vehiculo = ?)
-                """, tipoVehiculo, tipoVehiculo);
-    }
-
-    // ───────────── Conductor: disponibilidad y GPS ─────────────
+    // ───────────── Disponibilidad y GPS ─────────────
 
     /** Body { "activo": true|false, "lat": .., "lng": .. }. Las coordenadas son opcionales pero recomendadas. */
     @PostMapping("/activar")
@@ -80,48 +58,22 @@ public class TransporteControlador {
         return Map.of("message", "Ubicación actualizada");
     }
 
-    // ───────────── Ciclo del servicio ─────────────
-
-    @PostMapping("/solicitar")
-    public Map<String, Object> crearSolicitud(@Valid @RequestBody SolicitudRequest solicitud) {
-        return viajes.crearSolicitud(solicitud);
-    }
+    // ───────────── Solicitudes ─────────────
 
     @GetMapping("/solicitudes-pendientes/{conductorId}")
     public ResponseEntity<?> solicitudesPendientes(@PathVariable Long conductorId) {
         sesion.exigirConductor(conductorId);
-        // Sanción solo con historial suficiente (mín. 5 cierres) y más de 20 % de cancelaciones propias
-        Map<String, Object> t = db.queryForMap(
-                "SELECT total_servicios, total_cancelaciones FROM conductores WHERE usuario_id = ?", conductorId);
-        long cerrados = ((Number) t.get("total_servicios")).longValue() + ((Number) t.get("total_cancelaciones")).longValue();
-        long cancelados = ((Number) t.get("total_cancelaciones")).longValue();
-        double tasa = cerrados == 0 ? 0 : cancelados * 100.0 / cerrados;
-        if (cerrados >= 5 && tasa > 20.0) {
+        Double tasa = viajes.tasaSancion(conductorId);
+        if (tasa != null) {
             return ResponseEntity.status(403).body(Map.of(
                     "error", "Sanción por alta cancelación",
-                    "tasaActual", Math.round(tasa * 10) / 10.0,
+                    "tasaActual", tasa,
                     "message", "Tu tasa de cancelación supera el 20%. No recibirás solicitudes temporalmente."));
         }
         return ResponseEntity.ok(viajes.solicitudesPara(conductorId));
     }
 
-    @GetMapping("/servicio/{servicioId}")
-    public Map<String, Object> estadoServicio(@PathVariable Long servicioId) {
-        return viajes.obtener(servicioId);
-    }
-
-    @PatchMapping("/servicio/{servicioId}/estado")
-    public Map<String, Object> cambiarEstado(@PathVariable Long servicioId, @Valid @RequestBody CambioEstadoRequest body) {
-        return viajes.cambiarEstado(servicioId, body);
-    }
-
-    @PostMapping("/calificar")
-    public Map<String, Object> calificar(@Valid @RequestBody CalificacionRequest body) {
-        viajes.calificar(body.servicioId(), body.puntos(), body.comentario());
-        return Map.of("message", "Calificación guardada.");
-    }
-
-    // ───────────── Ganancias y viajes del conductor ─────────────
+    // ───────────── Ganancias e historial ─────────────
 
     @GetMapping("/ganancias-stats/{conductorId}")
     public Map<String, Object> gananciasStats(@PathVariable Long conductorId) {
@@ -174,19 +126,5 @@ public class TransporteControlador {
                 .header("Content-Type", "text/csv; charset=UTF-8")
                 .header("Content-Disposition", "attachment; filename=\"ganancias-" + conductorId + ".csv\"")
                 .body(estadisticas.csvGanancias(conductorId));
-    }
-
-    // ───────────── Historial del cliente ─────────────
-
-    @GetMapping("/servicios/usuario/{usuarioId}")
-    public List<Map<String, Object>> historialUsuario(@PathVariable Long usuarioId) {
-        sesion.exigirUsuario(usuarioId);
-        return estadisticas.historialCliente(usuarioId, false);
-    }
-
-    @GetMapping("/servicios/usuario/{usuarioId}/mes-actual")
-    public Map<String, Object> statsMesActual(@PathVariable Long usuarioId) {
-        sesion.exigirUsuario(usuarioId);
-        return estadisticas.resumenMesCliente(usuarioId);
     }
 }

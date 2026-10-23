@@ -2,15 +2,12 @@ package com.movify.backend.servicios;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 import org.springframework.core.io.Resource;
 import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -20,9 +17,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
-import com.movify.backend.comun.AccesoDenegadoException;
 import com.movify.backend.comun.ArchivoServicio;
-import com.movify.backend.comun.Datos;
 import com.movify.backend.seguridad.SesionActual;
 import com.movify.backend.servicios.ServicioDtos.CambioEstadoRequest;
 import com.movify.backend.servicios.ServicioDtos.MensajeRequest;
@@ -49,18 +44,18 @@ import jakarta.validation.constraints.Min;
 @RequestMapping("/api/servicios")
 public class ServicioControlador {
 
-    private final JdbcTemplate db;
     private final SesionActual sesion;
     private final ViajeServicio viajes;
     private final EstadisticasServicio estadisticas;
+    private final MensajeServicio mensajes;
     private final ArchivoServicio archivos;
 
-    public ServicioControlador(JdbcTemplate db, SesionActual sesion, ViajeServicio viajes, EstadisticasServicio estadisticas,
-            ArchivoServicio archivos) {
-        this.db = db;
+    public ServicioControlador(SesionActual sesion, ViajeServicio viajes, EstadisticasServicio estadisticas,
+            MensajeServicio mensajes, ArchivoServicio archivos) {
         this.sesion = sesion;
         this.viajes = viajes;
         this.estadisticas = estadisticas;
+        this.mensajes = mensajes;
         this.archivos = archivos;
     }
 
@@ -109,11 +104,7 @@ public class ServicioControlador {
 
     @GetMapping("/{id}/historial")
     public List<Map<String, Object>> historial(@PathVariable Long id) {
-        viajes.obtener(id); // valida que pueda verlo
-        return db.queryForList("""
-                SELECT creado_en, estado_anterior, estado_nuevo, estado_nombre, color, actor_rol, motivo
-                FROM v_historial_servicios WHERE servicio_id = ? ORDER BY creado_en
-                """, id);
+        return viajes.historial(id);
     }
 
     // ───────────── Nota de voz del punto de referencia ─────────────
@@ -136,37 +127,14 @@ public class ServicioControlador {
     // ───────────── Chat ─────────────
 
     @GetMapping("/{id}/mensajes")
-    @Transactional
     public List<Map<String, Object>> mensajes(@PathVariable Long id) {
-        exigirParticipante(id);
-        Long yo = sesion.usuarioId();
-        db.update("UPDATE mensajes_servicio SET leido_en = now() WHERE servicio_id = ? AND remitente_id <> ? AND leido_en IS NULL",
-                id, yo);
-        return db.queryForList("""
-                SELECT id, remitente_id, (remitente_id = ?) AS mio, contenido, leido_en, creado_en
-                FROM mensajes_servicio WHERE servicio_id = ? ORDER BY creado_en
-                """, yo, id);
+        return mensajes.mensajes(id);
     }
 
     @PostMapping("/{id}/mensajes")
     @PreAuthorize("hasAuthority('chat.usar')")
     public Map<String, Object> enviarMensaje(@PathVariable Long id, @Valid @RequestBody MensajeRequest req) {
-        exigirParticipante(id);
-        // El trigger fn_mensajes_validar exige que el servicio esté activo
-        Long msg = db.queryForObject(
-                "INSERT INTO mensajes_servicio (servicio_id, remitente_id, contenido) VALUES (?, ?, ?) RETURNING id",
-                Long.class, id, sesion.usuarioId(), req.contenido().trim());
-        return Map.of("id", msg);
-    }
-
-    private void exigirParticipante(Long servicioId) {
-        Map<String, Object> s = db.queryForList("SELECT cliente_id, conductor_id FROM servicios WHERE id = ?", servicioId)
-                .stream().findFirst().orElseThrow(() -> new AccesoDenegadoException("No puedes ver este chat"));
-        Long yo = sesion.usuarioId();
-        if (!Objects.equals(Datos.aLong(s.get("cliente_id")), yo) && !Objects.equals(Datos.aLong(s.get("conductor_id")), yo)
-                && !sesion.esPersonal()) {
-            throw new AccesoDenegadoException("No puedes ver este chat");
-        }
+        return Map.of("id", mensajes.enviar(id, req.contenido()));
     }
 
     // ───────────── Historiales que ya usaba la web ─────────────
@@ -187,7 +155,6 @@ public class ServicioControlador {
     public List<Map<String, Object>> serviciosConductor(@PathVariable Long conductorId,
             @RequestParam(defaultValue = "50") int limite) {
         sesion.exigirConductor(conductorId);
-        return db.queryForList("SELECT * FROM v_servicios_api WHERE conductor_id = ? ORDER BY fecha_solicitud DESC LIMIT ?",
-                conductorId, Math.min(Math.max(limite, 1), 200));
+        return estadisticas.serviciosConductor(conductorId, limite);
     }
 }

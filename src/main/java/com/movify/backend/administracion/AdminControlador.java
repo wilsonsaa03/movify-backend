@@ -4,7 +4,6 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -38,13 +37,13 @@ import jakarta.validation.constraints.Size;
 public class AdminControlador {
 
     private final AdminServicio admin;
+    private final AdminConsultaServicio consultas;
     private final ViajeServicio viajes;
-    private final JdbcTemplate db;
 
-    public AdminControlador(AdminServicio admin, ViajeServicio viajes, JdbcTemplate db) {
+    public AdminControlador(AdminServicio admin, AdminConsultaServicio consultas, ViajeServicio viajes) {
         this.admin = admin;
+        this.consultas = consultas;
         this.viajes = viajes;
-        this.db = db;
     }
 
     public record EstadoConductorRequest(
@@ -116,17 +115,7 @@ public class AdminControlador {
     @PreAuthorize("hasAuthority('admin_servicios.ver')")
     public List<Map<String, Object>> servicios(@RequestParam(required = false) String estado,
             @RequestParam(defaultValue = "200") int limite) {
-        return db.queryForList("""
-                SELECT v.id, v.tipo, v.tipo_servicio, v.tipo_vehiculo, v.estado, v.estado_codigo, v.estado_nombre,
-                       v.estado_color, v.tarifa, v.fecha_solicitud, v.origen, v.destino, v.destino_lat, v.destino_lng,
-                       v.usuario_nombre, trim(u.nombres || ' ' || COALESCE(u.apellidos, '')) AS conductor_nombre,
-                       v.motivo_cancelacion, v.cancelado_por
-                FROM v_servicios_api v
-                LEFT JOIN usuarios u ON u.id = v.conductor_id
-                WHERE CAST(? AS varchar) IS NULL OR v.estado_codigo = ?
-                ORDER BY v.fecha_solicitud DESC
-                LIMIT ?
-                """, estado, estado, Math.min(Math.max(limite, 1), 1000));
+        return consultas.servicios(estado, limite);
     }
 
     // ═════════════ Rutas nuevas /api/admin ═════════════
@@ -134,7 +123,7 @@ public class AdminControlador {
     @GetMapping("/api/admin/conductores/pendientes")
     @PreAuthorize("hasAuthority('admin_conductores.ver')")
     public List<Map<String, Object>> pendientes() {
-        return db.queryForList("SELECT * FROM v_conductores_pendientes ORDER BY creado_en");
+        return consultas.conductoresPendientes();
     }
 
     @PatchMapping("/api/admin/documentos/{id}")
@@ -146,7 +135,7 @@ public class AdminControlador {
     @GetMapping("/api/admin/documentos/por-vencer")
     @PreAuthorize("hasAuthority('admin_conductores.ver')")
     public List<Map<String, Object>> porVencer() {
-        return db.queryForList("SELECT * FROM v_documentos_por_vencer ORDER BY dias_restantes");
+        return consultas.documentosPorVencer();
     }
 
     @PostMapping("/api/admin/usuarios/{id}/roles")
@@ -172,23 +161,13 @@ public class AdminControlador {
     @GetMapping("/api/admin/resumen")
     @PreAuthorize("hasAuthority('reportes.ver')")
     public Map<String, Object> resumen() {
-        return Map.of(
-                "por_dia", db.queryForList("SELECT * FROM v_resumen_diario WHERE fecha >= CURRENT_DATE - 30 ORDER BY fecha DESC"),
-                "conductores_en_linea", db.queryForList("SELECT usuario_id, nombres, tipo_vehiculo, placa, lat, lng, ocupado FROM v_conductores_en_linea"),
-                "totales", db.queryForMap("""
-                        SELECT (SELECT count(*) FROM usuarios WHERE estado = 'activo') AS usuarios_activos,
-                               (SELECT count(*) FROM conductores WHERE estado = 'aprobado') AS conductores_aprobados,
-                               (SELECT count(*) FROM conductores WHERE estado = 'pendiente') AS conductores_pendientes,
-                               (SELECT count(*) FROM servicios WHERE estado IN ('buscando','asignado','en_origen','en_curso')) AS servicios_activos,
-                               (SELECT count(*) FROM alertas_sos WHERE estado IN ('abierta','en_atencion')) AS sos_abiertas,
-                               (SELECT count(*) FROM tickets_soporte WHERE estado IN ('abierto','en_proceso')) AS pqrs_abiertas
-                        """));
+        return consultas.resumen();
     }
 
     @GetMapping("/api/admin/tarifas")
     @PreAuthorize("hasAuthority('tarifas.ver')")
     public List<Map<String, Object>> tarifas() {
-        return db.queryForList("SELECT * FROM tarifas ORDER BY tipo_servicio, tipo_vehiculo, activo DESC, vigente_desde DESC");
+        return consultas.tarifas();
     }
 
     @PostMapping("/api/admin/tarifas")
@@ -201,7 +180,7 @@ public class AdminControlador {
     @GetMapping("/api/admin/configuracion")
     @PreAuthorize("hasAuthority('configuracion.ver')")
     public List<Map<String, Object>> configuracion() {
-        return db.queryForList("SELECT clave, valor, descripcion, actualizado_en FROM configuracion_sistema ORDER BY clave");
+        return consultas.configuracion();
     }
 
     @PutMapping("/api/admin/configuracion/{clave}")
@@ -213,11 +192,7 @@ public class AdminControlador {
     @GetMapping("/api/admin/sos")
     @PreAuthorize("hasAuthority('admin_sos.ver')")
     public List<Map<String, Object>> sos() {
-        return db.queryForList("""
-                SELECT a.*, trim(u.nombres || ' ' || COALESCE(u.apellidos, '')) AS usuario_nombre, u.telefono
-                FROM alertas_sos a JOIN usuarios u ON u.id = a.usuario_id
-                ORDER BY (a.estado IN ('abierta','en_atencion')) DESC, a.creado_en DESC LIMIT 200
-                """);
+        return consultas.alertasSos();
     }
 
     @PatchMapping("/api/admin/sos/{id}")
@@ -229,7 +204,7 @@ public class AdminControlador {
     @GetMapping("/api/admin/pqrs")
     @PreAuthorize("hasAuthority('admin_pqrs.ver')")
     public List<Map<String, Object>> pqrs() {
-        return db.queryForList("SELECT * FROM v_pqrs_pendientes ORDER BY vencida DESC, fecha_limite_respuesta");
+        return consultas.pqrsPendientes();
     }
 
     @PatchMapping("/api/admin/pqrs/{id}")
@@ -241,9 +216,6 @@ public class AdminControlador {
     @GetMapping("/api/admin/auditoria")
     @PreAuthorize("hasAuthority('auditoria.ver')")
     public Map<String, Object> auditoria() {
-        return Map.of(
-                "acciones", db.queryForList("SELECT * FROM auditoria_admin ORDER BY creado_en DESC LIMIT 200"),
-                "cambios", db.queryForList("SELECT * FROM auditoria_cambios ORDER BY creado_en DESC LIMIT 200"),
-                "accesos_sospechosos", db.queryForList("SELECT * FROM v_accesos_sospechosos"));
+        return consultas.auditoria();
     }
 }

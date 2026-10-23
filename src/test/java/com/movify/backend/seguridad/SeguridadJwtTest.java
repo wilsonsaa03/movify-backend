@@ -15,6 +15,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.web.servlet.MockMvc;
@@ -34,6 +35,7 @@ import io.jsonwebtoken.security.Keys;
  *  - un endpoint protegido responde 401 sin token, con token vencido o con firma falsa;
  *  - BCrypt es un único bean (PasswordEncoder) inyectado.
  * El login con celular y clave incorrecta → 401 sin token lo cubre FlujoCompletoTest.loginConCelularYClave.
+ * Y de la HU 2.3 "Roles y control de acceso": con token válido de otro rol o sin el permiso → 403.
  */
 @WebMvcTest(controllers = SeguridadJwtTest.Protegido.class, properties = {
         "app.jwt.secret=" + SeguridadJwtTest.SECRETO,
@@ -49,6 +51,19 @@ class SeguridadJwtTest {
     static class Protegido {
         @GetMapping("/api/servicios/mios-prueba")
         Map<String, Object> mios() {
+            return Map.of("ok", true);
+        }
+
+        /** Bajo /api/admin/**: SecurityConfig exige rol ADMIN o SOPORTE. */
+        @GetMapping("/api/admin/panel-prueba")
+        Map<String, Object> panel() {
+            return Map.of("ok", true);
+        }
+
+        /** Regla fina por permiso, como en los controladores reales. */
+        @GetMapping("/api/servicios/solicitar-prueba")
+        @PreAuthorize("hasAuthority('servicios.solicitar')")
+        Map<String, Object> soloConPermiso() {
             return Map.of("ok", true);
         }
     }
@@ -108,6 +123,34 @@ class SeguridadJwtTest {
         mvc.perform(get("/api/servicios/mios-prueba").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.ok").value(true));
+    }
+
+    // ───────────── HU 2.3: token válido pero de otro rol → 403 ─────────────
+
+    @Test
+    void clienteNoEntraAlPanelAdminResponde403() throws Exception {
+        String cliente = jwt.generarAcceso(42L, "ana@movify.co", "cliente", List.of("cliente"), List.of("servicios.solicitar"));
+        mvc.perform(get("/api/admin/panel-prueba").header("Authorization", "Bearer " + cliente))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("No tienes permiso para esta acción"));
+    }
+
+    @Test
+    void adminSiEntraAlPanel() throws Exception {
+        String admin = jwt.generarAcceso(1L, "admin@movify.co", "admin", List.of("admin"), List.of());
+        mvc.perform(get("/api/admin/panel-prueba").header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void sinElPermisoDelEndpointResponde403() throws Exception {
+        String conductor = jwt.generarAcceso(7L, "luis@movify.co", "conductor", List.of("conductor"), List.of("servicios.ver_disponibles"));
+        mvc.perform(get("/api/servicios/solicitar-prueba").header("Authorization", "Bearer " + conductor))
+                .andExpect(status().isForbidden());
+
+        String cliente = jwt.generarAcceso(42L, "ana@movify.co", "cliente", List.of("cliente"), List.of("servicios.solicitar"));
+        mvc.perform(get("/api/servicios/solicitar-prueba").header("Authorization", "Bearer " + cliente))
+                .andExpect(status().isOk());
     }
 
     @Test

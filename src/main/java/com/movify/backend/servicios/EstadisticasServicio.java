@@ -203,6 +203,12 @@ public class EstadisticasServicio {
         return csv.toString().getBytes(StandardCharsets.UTF_8);
     }
 
+    /** Últimos servicios del conductor (1 a 200). */
+    public List<Map<String, Object>> serviciosConductor(Long conductorId, int limite) {
+        return db.queryForList("SELECT * FROM v_servicios_api WHERE conductor_id = ? ORDER BY fecha_solicitud DESC LIMIT ?",
+                conductorId, Math.min(Math.max(limite, 1), 200));
+    }
+
     // ───────────── Cliente ─────────────
 
     public List<Map<String, Object>> historialCliente(Long clienteId, boolean soloMes) {

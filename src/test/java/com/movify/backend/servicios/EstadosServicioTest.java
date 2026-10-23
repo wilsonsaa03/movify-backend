@@ -53,9 +53,9 @@ class EstadosServicioTest {
 
     @Test
     void tamanoDelPaqueteDeLaWeb() {
-        assertEquals("pequeno", ViajeServicio.tamano(null, "documento"));
-        assertEquals("pequeno", ViajeServicio.tamano(null, "caja-pequeña"));
-        assertEquals("mediano", ViajeServicio.tamano(null, "caja-mediana"));
-        assertEquals("grande", ViajeServicio.tamano("grande", null));
+        assertEquals("pequeno", EncomiendaServicio.tamano(null, "documento"));
+        assertEquals("pequeno", EncomiendaServicio.tamano(null, "caja-pequeña"));
+        assertEquals("mediano", EncomiendaServicio.tamano(null, "caja-mediana"));
+        assertEquals("grande", EncomiendaServicio.tamano("grande", null));
     }
 }

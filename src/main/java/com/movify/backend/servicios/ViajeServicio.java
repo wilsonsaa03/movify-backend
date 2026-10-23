@@ -2,8 +2,6 @@ package com.movify.backend.servicios;
 
 import static com.movify.backend.servicios.EstadosServicio.*;
 
-import java.math.BigDecimal;
-import java.security.SecureRandom;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -23,6 +21,7 @@ import com.movify.backend.comun.AccesoDenegadoException;
 import com.movify.backend.comun.ArchivoServicio;
 import com.movify.backend.comun.ActorBd;
 import com.movify.backend.comun.Celular;
+import com.movify.backend.comun.ContenidoProhibido;
 import com.movify.backend.comun.Datos;
 import com.movify.backend.comun.RecursoNoEncontradoException;
 import com.movify.backend.comun.ReglaNegocioException;
@@ -43,7 +42,6 @@ import com.movify.backend.servicios.ServicioDtos.SolicitudRequest;
 public class ViajeServicio {
 
     private static final Logger log = LoggerFactory.getLogger(ViajeServicio.class);
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     /** Motivo de cancelación por defecto según quién cancela (motivos_cancelacion). */
     private static final Map<String, Short> MOTIVO_POR_DEFECTO = Map.of(
@@ -55,14 +53,16 @@ public class ViajeServicio {
     private final TarifaServicio tarifas;
     private final ActorBd actor;
     private final ObjectProvider<SimulacionDemo> simulacion;
+    private final EncomiendaServicio encomiendas;
 
     public ViajeServicio(JdbcTemplate db, SesionActual sesion, TarifaServicio tarifas, ActorBd actor,
-            ObjectProvider<SimulacionDemo> simulacion) {
+            ObjectProvider<SimulacionDemo> simulacion, EncomiendaServicio encomiendas) {
         this.db = db;
         this.sesion = sesion;
         this.tarifas = tarifas;
         this.actor = actor;
         this.simulacion = simulacion;
+        this.encomiendas = encomiendas;
     }
 
     // ═════════════════════════════ Solicitud ═════════════════════════════
@@ -100,7 +100,7 @@ public class ViajeServicio {
         String codigoEntrega = null;
         switch (tipo) {
             case "domicilio" -> crearDomicilio(servicioId, s);
-            case "encomienda" -> codigoEntrega = crearEncomienda(servicioId, s, clienteId);
+            case "encomienda" -> codigoEntrega = encomiendas.crear(servicioId, s, clienteId);
             default -> {
             }
         }
@@ -138,6 +138,10 @@ public class ViajeServicio {
     private void crearDomicilio(Long servicioId, SolicitudRequest s) {
         String descripcion = Datos.vacioANull(s.descripcion());
         if (descripcion == null) throw new ReglaNegocioException(400, "Cuéntanos qué necesitas que te traigan");
+        ContenidoProhibido.exigirPermitido(descripcion, s.establecimiento(), s.notas());
+        if (s.items() != null) {
+            for (ItemDomicilio i : s.items()) ContenidoProhibido.exigirPermitido(i.descripcion(), i.notas());
+        }
         boolean compra = Boolean.TRUE.equals(s.requiereCompra());
         if (compra && s.valorProductosAprox() == null) {
             throw new ReglaNegocioException(400, "Indica cuánto cuestan más o menos los productos");
@@ -158,46 +162,6 @@ public class ViajeServicio {
                         i.precioUnitarioAprox(), Datos.vacioANull(i.notas()));
             }
         }
-    }
-
-    /** @return el PIN de 4 dígitos que el destinatario le dará al conductor al recibir. */
-    private String crearEncomienda(Long servicioId, SolicitudRequest s, Long clienteId) {
-        Map<String, Object> cli = db.queryForMap(
-                "SELECT trim(nombres || ' ' || COALESCE(apellidos, '')) AS nombre, telefono FROM usuarios WHERE id = ?",
-                clienteId);
-        String remitente = firstNonBlank(s.nombreRemitente(), Datos.texto(cli.get("nombre")));
-        String telRemitente = Celular.normalizarContacto(firstNonBlank(s.telefonoRemitente(), Datos.texto(cli.get("telefono"))));
-        String telDestinatario = Celular.normalizarContacto(s.telefonoDestinatario());
-        if (telRemitente == null) throw new ReglaNegocioException(400, "Escribe un teléfono válido para quien envía");
-        if (Datos.vacioANull(s.nombreDestinatario()) == null) throw new ReglaNegocioException(400, "¿A quién le llega el paquete?");
-        if (telDestinatario == null) throw new ReglaNegocioException(400, "Escribe un teléfono válido para quien recibe");
-        String descripcion = Datos.vacioANull(s.descripcion());
-        if (descripcion == null) throw new ReglaNegocioException(400, "Describe qué vas a enviar");
-
-        BigDecimal peso;
-        try {
-            peso = new BigDecimal(firstNonBlank(s.pesoKg(), "1").replace(",", ".").replaceAll("[^0-9.]", ""));
-        } catch (NumberFormatException e) {
-            throw new ReglaNegocioException(400, "El peso no es válido");
-        }
-        String pin = String.format("%04d", RANDOM.nextInt(10_000));
-        db.update("""
-                INSERT INTO servicio_encomienda (servicio_id, remitente_nombre, remitente_telefono, destinatario_nombre,
-                    destinatario_telefono, descripcion_paquete, tamano, peso_kg, fragil, valor_declarado, codigo_entrega)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, servicioId, Datos.recortar(remitente, 120), telRemitente, Datos.recortar(s.nombreDestinatario(), 120),
-                telDestinatario, Datos.recortar(descripcion, 300), tamano(s.tamano(), s.tipoPaquete()), peso,
-                Boolean.TRUE.equals(s.fragil()), s.valorDeclarado(), pin);
-        return pin;
-    }
-
-    /** "documento", "caja-pequeña"... (web) → pequeno | mediano | grande. */
-    static String tamano(String tamano, String tipoPaquete) {
-        String t = firstNonBlank(tamano, tipoPaquete);
-        t = t == null ? "pequeno" : t.toLowerCase(Locale.ROOT).replace("ñ", "n");
-        if (t.contains("grande")) return "grande";
-        if (t.contains("median")) return "mediano";
-        return "pequeno";
     }
 
     // ═════════════════════════════ Ofertas para el conductor ═════════════════════════════
@@ -264,8 +228,7 @@ public class ViajeServicio {
         }
         // El PIN de entrega solo lo ve quien pidió la encomienda (se lo pasa al destinatario)
         if (soyCliente && "encomienda".equals(s.get("tipo_servicio"))) {
-            s.put("codigo_entrega", db.queryForObject(
-                    "SELECT codigo_entrega FROM servicio_encomienda WHERE servicio_id = ?", String.class, servicioId));
+            s.put("codigo_entrega", encomiendas.codigoEntrega(servicioId));
         }
         if ("domicilio".equals(s.get("tipo_servicio"))) {
             s.put("items", db.queryForList("""
@@ -308,6 +271,40 @@ public class ViajeServicio {
                 ORDER BY solicitado_en DESC LIMIT 1
                 """, Long.class, yo, yo);
         return ids.isEmpty() ? null : obtener(ids.get(0));
+    }
+
+    /** Línea de tiempo de los estados del servicio (mismas reglas de acceso que obtener). */
+    public List<Map<String, Object>> historial(Long servicioId) {
+        obtener(servicioId); // valida que pueda verlo
+        return db.queryForList("""
+                SELECT creado_en, estado_anterior, estado_nuevo, estado_nombre, color, actor_rol, motivo
+                FROM v_historial_servicios WHERE servicio_id = ? ORDER BY creado_en
+                """, servicioId);
+    }
+
+    /**
+     * Sanción por alta cancelación: con historial suficiente (mín. 5 cierres) y más de 20 % de
+     * cancelaciones propias el conductor deja de recibir solicitudes.
+     * @return la tasa de cancelación (%) si está sancionado, o null.
+     */
+    public Double tasaSancion(Long conductorId) {
+        Map<String, Object> t = db.queryForMap(
+                "SELECT total_servicios, total_cancelaciones FROM conductores WHERE usuario_id = ?", conductorId);
+        long cancelados = ((Number) t.get("total_cancelaciones")).longValue();
+        long cerrados = ((Number) t.get("total_servicios")).longValue() + cancelados;
+        double tasa = cerrados == 0 ? 0 : cancelados * 100.0 / cerrados;
+        return cerrados >= 5 && tasa > 20.0 ? Math.round(tasa * 10) / 10.0 : null;
+    }
+
+    /** Conductores libres para el mapa: solo posición, sin nombre ni foto. */
+    public List<Map<String, Object>> conductoresLibres(String tipoVehiculo) {
+        return db.queryForList("""
+                SELECT usuario_id AS conductor_id, lat AS latitud, lng AS longitud, true AS en_linea, tipo_vehiculo
+                FROM v_conductores_en_linea
+                WHERE NOT ocupado
+                  AND actualizado_en > now() - make_interval(secs => fn_config_num('ubicacion_vigencia_seg', 300)::int)
+                  AND (CAST(? AS varchar) IS NULL OR tipo_vehiculo = ?)
+                """, tipoVehiculo, tipoVehiculo);
     }
 
     // ═════════════════════════════ Cambios de estado ═════════════════════════════
@@ -416,14 +413,7 @@ public class ViajeServicio {
     /** Antes de finalizar: PIN de la encomienda y valor real de la compra del domicilio. */
     private void prepararCierre(Long servicioId, String tipo, CambioEstadoRequest req, String quien) {
         if ("encomienda".equals(tipo)) {
-            Map<String, Object> e = db.queryForMap(
-                    "SELECT codigo_entrega, destinatario_nombre FROM servicio_encomienda WHERE servicio_id = ?", servicioId);
-            boolean personal = ActorBd.ADMIN.equals(quien) || ActorBd.SOPORTE.equals(quien);
-            if (!personal && !String.valueOf(e.get("codigo_entrega")).equals(req.codigoEntrega())) {
-                throw new ReglaNegocioException(400, "El código de entrega no coincide. Pídeselo a quien recibe el paquete.");
-            }
-            db.update("UPDATE servicio_encomienda SET entregado_a = ? WHERE servicio_id = ?",
-                    firstNonBlank(req.entregadoA(), Datos.texto(e.get("destinatario_nombre"))), servicioId);
+            encomiendas.prepararEntrega(servicioId, req, ActorBd.ADMIN.equals(quien) || ActorBd.SOPORTE.equals(quien));
         }
         if ("domicilio".equals(tipo) && req.valorCompraReal() != null) {
             db.update("UPDATE servicio_domicilio SET valor_compra_real = ? WHERE servicio_id = ?", req.valorCompraReal(),

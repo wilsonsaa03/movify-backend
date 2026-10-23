@@ -1,6 +1,7 @@
 package com.movify.backend;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
@@ -29,6 +30,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.movify.backend.servicios.TarifaServicio;
 
 /**
  * Prueba de punta a punta contra un PostgreSQL REAL (con las migraciones V1–V4 y los triggers del DER).
@@ -334,7 +336,14 @@ class FlujoCompletoTest {
         String pin = (String) s.get("codigo_entrega");
         assertThat(pin).matches("\\d{4}");
 
+        // Datos del paquete: el PIN solo lo ve quien pidió la encomienda
+        Map<String, Object> paquete = ok(get("/api/servicios/" + id + "/encomienda"), tokenCliente, null);
+        assertThat(paquete.get("destinatario_nombre")).isEqualTo("Carmen Valencia");
+        assertThat(paquete.get("codigo_entrega")).isEqualTo(pin);
+
         ok(patch("/api/transporte/servicio/" + id + "/estado"), tokenConductor, Map.of("estado", "ACEPTADO"));
+        Map<String, Object> delConductor = ok(get("/api/servicios/" + id + "/encomienda"), tokenConductor, null);
+        assertThat(delConductor).doesNotContainKey("codigo_entrega").containsKey("destinatario_telefono");
         ok(patch("/api/transporte/servicio/" + id + "/estado"), tokenConductor, Map.of("estado", "PAQUETE_RECOGIDO"));
         var sinPin = llamar(patch("/api/transporte/servicio/" + id + "/estado"), tokenConductor, Map.of("estado", "FINALIZADO"));
         assertThat(sinPin.getResponse().getStatus()).isEqualTo(400);
@@ -344,15 +353,145 @@ class FlujoCompletoTest {
                 .isEqualTo("Carmen Valencia");
     }
 
+    /** HU 2.8: sin destinatario o sin entrega no se crea nada; pendiente o aceptada, el cliente la cancela. */
     @Test
-    @Order(50)
-    void clienteCancelaYNadieMas() throws Exception {
+    @Order(42)
+    void encomiendaSeValidaYSeCancela() throws Exception {
+        String pendientes = "/api/transporte/solicitudes-pendientes/" + idConductor;
+        int antes = db.queryForObject("SELECT count(*) FROM servicios WHERE cliente_id = ?", Integer.class, idCliente);
+
+        // 1. Sin destinatario: 400 con mensaje y no queda ni el servicio ni la encomienda (todo en una transacción)
+        var sinDestinatario = llamar(post("/api/servicios"), tokenCliente, Map.of("origen_lat", LAT, "origen_lng", LNG,
+                "destino_lat", 3.87, "destino_lng", -77.04, "tipo", "encomienda", "descripcion", "Caja con ropa",
+                "telefono_destinatario", "3105556677"));
+        assertThat(sinDestinatario.getResponse().getStatus()).isEqualTo(400);
+        assertThat(sinDestinatario.getResponse().getContentAsString()).contains("le llega el paquete");
+
+        // 2. Sin dirección de entrega: 400 por la validación del destino
+        var sinEntrega = llamar(post("/api/servicios"), tokenCliente, Map.of("origen_lat", LAT, "origen_lng", LNG,
+                "tipo", "encomienda", "descripcion", "Caja con ropa", "nombre_destinatario", "Carmen Valencia",
+                "telefono_destinatario", "3105556677"));
+        assertThat(sinEntrega.getResponse().getStatus()).isEqualTo(400);
+
+        // 3. Paquete demasiado pesado: mensaje claro (no el error crudo de la BD)
+        var pesado = llamar(post("/api/servicios"), tokenCliente, Map.of("origen_lat", LAT, "origen_lng", LNG,
+                "destino_lat", 3.87, "destino_lng", -77.04, "tipo", "encomienda", "descripcion", "Nevera",
+                "nombre_destinatario", "Carmen Valencia", "telefono_destinatario", "3105556677", "peso_kg", "80",
+                "tipo_vehiculo", "taxi"));
+        assertThat(pesado.getResponse().getStatus()).isEqualTo(400);
+        assertThat(pesado.getResponse().getContentAsString()).contains("30 kg");
+
+        // Contenido delictivo: se rechaza y no se crea nada
+        var prohibido = llamar(post("/api/servicios"), tokenCliente, Map.of("origen_lat", LAT, "origen_lng", LNG,
+                "destino_lat", 3.87, "destino_lng", -77.04, "tipo", "encomienda", "descripcion", "Medio kilo de marihuana",
+                "nombre_destinatario", "Carmen Valencia", "telefono_destinatario", "3105556677"));
+        assertThat(prohibido.getResponse().getStatus()).isEqualTo(400);
+        assertThat(prohibido.getResponse().getContentAsString()).contains("drogas");
+        assertThat(db.queryForObject("SELECT count(*) FROM servicios WHERE cliente_id = ?", Integer.class, idCliente))
+                .isEqualTo(antes);
+
+        // 4. Completa: queda pendiente y se le ofrece al conductor; el cliente la cancela y deja de verla
+        Map<String, Object> datos = Map.of("origen_lat", LAT, "origen_lng", LNG, "destino_lat", 3.87, "destino_lng", -77.04,
+                "tipo", "encomienda", "descripcion", "Caja con ropa", "nombre_destinatario", "Carmen Valencia",
+                "telefono_destinatario", "3105556677", "tipo_paquete", "caja-mediana", "peso_kg", "3");
+        Map<String, Object> s = ok(post("/api/servicios"), tokenCliente, datos);
+        long id = ((Number) s.get("id")).longValue();
+        assertThat(s.get("estado")).isEqualTo("PENDIENTE");
+        assertThat(lista(get(pendientes), tokenConductor)).anyMatch(p -> ((Number) p.get("servicio_id")).longValue() == id);
+        ok(post("/api/servicios/" + id + "/estado"), tokenCliente, Map.of("estado", "cancelado"));
+        assertThat(db.queryForObject("SELECT estado FROM servicios WHERE id = ?", String.class, id)).isEqualTo("cancelado");
+        assertThat(lista(get(pendientes), tokenConductor)).noneMatch(p -> ((Number) p.get("servicio_id")).longValue() == id);
+
+        // 5. Aceptada: el cliente también puede cancelarla
+        long id2 = ((Number) ok(post("/api/servicios"), tokenCliente, datos).get("id")).longValue();
+        ok(patch("/api/transporte/servicio/" + id2 + "/estado"), tokenConductor, Map.of("estado", "ACEPTADO"));
+        Map<String, Object> c = ok(post("/api/servicios/" + id2 + "/estado"), tokenCliente, Map.of("estado", "cancelado"));
+        assertThat(c.get("estado_codigo")).isEqualTo("cancelado");
+    }
+
+    /** La distancia de la BD es Haversine (igual a la del backend) y los conductores salen del más cercano al más lejano. */
+    @Test
+    @Order(45)
+    void conductoresCercanosConHaversine() throws Exception {
+        double lat2 = 3.8950, lng2 = -77.0150;
+        Double bd = db.queryForObject("SELECT fn_distancia_km(?, ?, ?, ?)", Double.class, LAT, LNG, lat2, lng2);
+        assertThat(bd).isCloseTo(TarifaServicio.haversineKm(LAT, LNG, lat2, lng2), within(1e-9));
+        assertThat(db.queryForObject("SELECT fn_distancia_km(?, ?, ?, ?)", Double.class, LAT, LNG, LAT, LNG)).isZero();
+
+        List<Map<String, Object>> cerca = db.queryForList(
+                "SELECT conductor_id, distancia_km FROM fn_conductores_cercanos(?, ?, 5, 'moto', ?)", LAT, LNG, idCliente);
+        assertThat(cerca).anyMatch(c -> ((Number) c.get("conductor_id")).longValue() == idConductor);
+        for (int i = 1; i < cerca.size(); i++) {
+            assertThat(((Number) cerca.get(i).get("distancia_km")).doubleValue())
+                    .isGreaterThanOrEqualTo(((Number) cerca.get(i - 1).get("distancia_km")).doubleValue());
+        }
+        // Es moto: a un taxi no se le ofrece
+        assertThat(db.queryForList("SELECT conductor_id FROM fn_conductores_cercanos(?, ?, 5, 'taxi', ?)", LAT, LNG, idCliente))
+                .noneMatch(c -> ((Number) c.get("conductor_id")).longValue() == idConductor);
+    }
+
+    /** HU 2.5: un viaje en moto solo lo ven mototaxistas aprobados y conectados. */
+    @Test
+    @Order(47)
+    void motoSoloParaConductoresConectados() throws Exception {
+        String pendientes = "/api/transporte/solicitudes-pendientes/" + idConductor;
+        ok(post("/api/transporte/activar"), tokenConductor, Map.of("activo", false));
+
         Map<String, Object> s = ok(post("/api/servicios"), tokenCliente, Map.of("origen_lat", LAT, "origen_lng", LNG,
                 "destino_lat", 3.89, "destino_lng", -77.02, "tipo_vehiculo", "moto"));
         long id = ((Number) s.get("id")).longValue();
+        assertThat(db.queryForObject("SELECT tipo_vehiculo || '/' || estado FROM servicios WHERE id = ?", String.class, id))
+                .isEqualTo("moto/buscando");
+        assertThat(((Number) s.get("conductores_notificados")).intValue()).isZero();
+
+        // Desconectado: no la ve aunque esté aprobado y cerca
+        assertThat(lista(get(pendientes), tokenConductor)).noneMatch(p -> ((Number) p.get("servicio_id")).longValue() == id);
+
+        // Al conectarse sí le llega
+        ok(post("/api/transporte/activar"), tokenConductor, Map.of("activo", true, "lat", LAT + 0.002, "lng", LNG));
+        assertThat(lista(get(pendientes), tokenConductor)).anyMatch(p -> ((Number) p.get("servicio_id")).longValue() == id);
+
+        ok(post("/api/servicios/" + id + "/estado"), tokenCliente, Map.of("estado", "cancelado"));
+    }
+
+    @Test
+    @Order(50)
+    void clienteCancelaYNadieMas() throws Exception {
+        String pendientes = "/api/transporte/solicitudes-pendientes/" + idConductor;
+
+        // 1. Pendiente: se le ofrece al conductor cercano
+        Map<String, Object> s = ok(post("/api/servicios"), tokenCliente, Map.of("origen_lat", LAT, "origen_lng", LNG,
+                "destino_lat", 3.89, "destino_lng", -77.02, "tipo_vehiculo", "moto"));
+        long id = ((Number) s.get("id")).longValue();
+        assertThat(s.get("estado_codigo")).isEqualTo("buscando");
+        assertThat(lista(get(pendientes), tokenConductor)).anyMatch(p -> ((Number) p.get("servicio_id")).longValue() == id);
+
+        // 2. Salto fuera del flujo (pendiente → finalizado): se rechaza aunque lo pida el admin, y no cambia nada
+        var salto = llamar(post("/api/servicios/" + id + "/estado"), tokenAdmin, Map.of("estado", "finalizado"));
+        assertThat(salto.getResponse().getStatus()).isEqualTo(409);
+        assertThat(db.queryForObject("SELECT estado FROM servicios WHERE id = ?", String.class, id)).isEqualTo("buscando");
+
+        // 3. El cliente cancela la pendiente: queda cancelada y el conductor ya no la ve
         Map<String, Object> c = ok(post("/api/servicios/" + id + "/estado"), tokenCliente, Map.of("estado", "cancelado"));
         assertThat(c.get("estado_codigo")).isEqualTo("cancelado");
         assertThat(db.queryForObject("SELECT motivo_cancelacion_id FROM servicios WHERE id = ?", Integer.class, id)).isEqualTo(1);
+        assertThat(lista(get(pendientes), tokenConductor)).noneMatch(p -> ((Number) p.get("servicio_id")).longValue() == id);
+        assertThat(db.queryForObject("SELECT count(*) FROM servicio_ofertas WHERE servicio_id = ? AND estado IN ('enviada', 'vista')",
+                Integer.class, id)).isZero();
+
+        // 4. Aceptada: el cliente también puede cancelarla
+        Map<String, Object> s2 = ok(post("/api/servicios"), tokenCliente, Map.of("origen_lat", LAT, "origen_lng", LNG,
+                "destino_lat", 3.89, "destino_lng", -77.02, "tipo_vehiculo", "moto"));
+        long id2 = ((Number) s2.get("id")).longValue();
+        ok(patch("/api/transporte/servicio/" + id2 + "/estado"), tokenConductor, Map.of("estado", "ACEPTADO"));
+        assertThat(db.queryForObject("SELECT estado FROM servicios WHERE id = ?", String.class, id2)).isEqualTo("asignado");
+        Map<String, Object> c2 = ok(post("/api/servicios/" + id2 + "/estado"), tokenCliente, Map.of("estado", "cancelado"));
+        assertThat(c2.get("estado_codigo")).isEqualTo("cancelado");
+        assertThat(lista(get(pendientes), tokenConductor)).noneMatch(p -> ((Number) p.get("servicio_id")).longValue() == id2);
+
+        // 5. Un servicio cerrado no vuelve a moverse
+        var reabrir = llamar(post("/api/servicios/" + id2 + "/estado"), tokenAdmin, Map.of("estado", "en_curso"));
+        assertThat(reabrir.getResponse().getStatus()).isEqualTo(409);
     }
 
     // ───────────────────────── Web ─────────────────────────

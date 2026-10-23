@@ -1,7 +1,6 @@
 package com.movify.backend.conductores;
 
 import java.time.LocalDate;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -11,8 +10,6 @@ import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -27,7 +24,6 @@ import com.movify.backend.comun.AccesoDenegadoException;
 import com.movify.backend.comun.ArchivoServicio;
 import com.movify.backend.comun.Datos;
 import com.movify.backend.comun.RecursoNoEncontradoException;
-import com.movify.backend.comun.ReglaNegocioException;
 import com.movify.backend.conductores.ConductorDtos.DisponibilidadRequest;
 import com.movify.backend.conductores.ConductorDtos.IdentidadRequest;
 import com.movify.backend.conductores.ConductorDtos.LicenciaRequest;
@@ -56,14 +52,11 @@ public class ConductorControlador {
 
     private final ConductorServicio conductores;
     private final SesionActual sesion;
-    private final JdbcTemplate db;
     private final ArchivoServicio archivos;
 
-    public ConductorControlador(ConductorServicio conductores, SesionActual sesion, JdbcTemplate db,
-            ArchivoServicio archivos) {
+    public ConductorControlador(ConductorServicio conductores, SesionActual sesion, ArchivoServicio archivos) {
         this.conductores = conductores;
         this.sesion = sesion;
-        this.db = db;
         this.archivos = archivos;
     }
 
@@ -168,22 +161,11 @@ public class ConductorControlador {
         return Map.of("message", "Ubicación actualizada");
     }
 
-    /**
-     * "Zonas con más pedidos" del mapa del conductor: origen de los servicios de los últimos 7 días
-     * agrupado en celdas de ~550 m (0,005°). Devuelve el centro de las 6 celdas con más pedidos.
-     */
+    /** "Zonas con más pedidos" del mapa del conductor (últimos 7 días). */
     @GetMapping("/zonas-demanda")
     public List<Map<String, Object>> zonasDemanda() {
         sesion.conductorId(); // solo conductores
-        return db.queryForList("""
-                SELECT round(avg(origen_lat)::numeric, 5) AS lat, round(avg(origen_lng)::numeric, 5) AS lng,
-                       count(*) AS pedidos
-                FROM servicios
-                WHERE solicitado_en >= now() - INTERVAL '7 days'
-                GROUP BY floor(origen_lat / 0.005), floor(origen_lng / 0.005)
-                ORDER BY pedidos DESC
-                LIMIT 6
-                """);
+        return conductores.zonasDemanda();
     }
 
     // ───────────── Rutas que usa la web actual ─────────────
@@ -212,67 +194,16 @@ public class ConductorControlador {
         return ResponseEntity.ok().build();
     }
 
-    /** Edita nombre, teléfono y foto del conductor (la ciudad es siempre Buenaventura). */
+    /** Edita nombre y foto del conductor (la ciudad es siempre Buenaventura). */
     @PutMapping("/perfil/actualizar")
-    @Transactional
     public Map<String, Object> actualizarPerfilWeb(@RequestBody Map<String, Object> datos) {
-        Long id = sesion.conductorId();
-        String nombre = Datos.recortar(Datos.texto(datos.get("nombre")), 160);
-        String foto = Datos.recortar(Datos.texto(datos.get("foto")), 300);
-        if (nombre != null && !nombre.isBlank()) {
-            String[] p = nombre.trim().split("\\s+", 2);
-            db.update("UPDATE usuarios SET nombres = ?, apellidos = ? WHERE id = ?", p[0], p.length > 1 ? p[1] : null, id);
-        }
-        if (foto != null) db.update("UPDATE usuarios SET foto_url = ? WHERE id = ?", foto.isBlank() ? null : foto, id);
-        if (datos.get("telefono") != null) {
-            throw new ReglaNegocioException(400, "El celular se cambia desde la app con un código SMS");
-        }
-        return Map.of("mensaje", "Perfil actualizado correctamente");
+        return conductores.actualizarPerfilWeb(sesion.conductorId(), datos);
     }
 
     /** Perfil con estadísticas (lo usa la web y el panel del conductor). */
     @GetMapping("/perfil/{correo:.+}")
     public Map<String, Object> obtenerPerfil(@PathVariable String correo) {
-        List<Map<String, Object>> u = db.queryForList("SELECT id FROM usuarios WHERE lower(email) = lower(?)", correo.trim());
-        if (u.isEmpty()) throw new RecursoNoEncontradoException("Usuario no encontrado");
-        Long id = Datos.aLong(u.get(0).get("id"));
-        if (!id.equals(sesion.usuarioId()) && !sesion.esPersonal()) {
-            throw new AccesoDenegadoException("No puedes ver el perfil de otro conductor");
-        }
-        return perfilConEstadisticas(id);
-    }
-
-    public Map<String, Object> perfilConEstadisticas(Long id) {
-        List<Map<String, Object>> filas = db.queryForList("""
-                SELECT c.usuario_id AS conductor_id, trim(u.nombres || ' ' || COALESCE(u.apellidos, '')) AS nombre,
-                       u.email AS correo, u.telefono, u.foto_url AS foto, c.estado, c.motivo_estado AS motivo_rechazo,
-                       c.disponible AS en_linea, c.calificacion_promedio AS calificacion,
-                       v.placa, trim(v.marca || ' ' || COALESCE(v.linea, '') || ' ' || v.modelo_anio) AS modelo,
-                       v.tipo_vehiculo, 'Buenaventura' AS ciudad
-                FROM conductores c
-                JOIN usuarios u ON u.id = c.usuario_id
-                LEFT JOIN vehiculos v ON v.conductor_id = c.usuario_id AND v.activo
-                WHERE c.usuario_id = ?
-                """, id);
-        if (filas.isEmpty()) throw new RecursoNoEncontradoException("Perfil de conductor no encontrado para este usuario");
-        Map<String, Object> r = new HashMap<>(filas.get(0));
-        Map<String, Object> s = db.queryForMap("""
-                SELECT COUNT(*) FILTER (WHERE estado = 'finalizado') AS total,
-                       COUNT(*) FILTER (WHERE estado = 'finalizado'
-                                          AND (finalizado_en AT TIME ZONE 'America/Bogota')::date = (now() AT TIME ZONE 'America/Bogota')::date) AS hoy,
-                       COALESCE(SUM(valor_final) FILTER (WHERE estado = 'finalizado'
-                                          AND (finalizado_en AT TIME ZONE 'America/Bogota')::date = (now() AT TIME ZONE 'America/Bogota')::date), 0) AS g_hoy,
-                       COALESCE(SUM(valor_final) FILTER (WHERE estado = 'finalizado'
-                                          AND finalizado_en >= date_trunc('week', now() AT TIME ZONE 'America/Bogota') AT TIME ZONE 'America/Bogota'), 0) AS g_semana
-                FROM servicios WHERE conductor_id = ?
-                """, id);
-        r.put("gananciasHoy", s.get("g_hoy"));
-        r.put("gananciasSemana", s.get("g_semana"));
-        r.put("viajesHoy", s.get("hoy"));
-        r.put("viajesTotal", s.get("total"));
-        r.put("historial", List.of());
-        r.put("solicitudes", List.of());
-        return r;
+        return conductores.perfilPorCorreo(correo, sesion.usuarioId(), sesion.esPersonal());
     }
 
     /**
@@ -281,10 +212,7 @@ public class ConductorControlador {
      */
     @GetMapping("/documento/{nombreArchivo:.+}")
     public ResponseEntity<Resource> obtenerDocumento(@PathVariable String nombreArchivo) {
-        Boolean existe = db.queryForObject("SELECT EXISTS (SELECT 1 FROM documentos_conductor WHERE ruta_archivo = ?)",
-                Boolean.class, nombreArchivo);
-        if (!Boolean.TRUE.equals(existe)) throw new RecursoNoEncontradoException("Documento no encontrado");
-        ArchivoServicio.Archivo doc = archivos.obtener(nombreArchivo);
+        ArchivoServicio.Archivo doc = archivos.obtener(conductores.documentoRegistrado(nombreArchivo));
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(doc.contentType()))
                 .header(HttpHeaders.CONTENT_DISPOSITION,
