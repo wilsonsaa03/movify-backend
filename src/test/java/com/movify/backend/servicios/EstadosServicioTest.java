@@ -58,4 +58,13 @@ class EstadosServicioTest {
         assertEquals("mediano", EncomiendaServicio.tamano(null, "caja-mediana"));
         assertEquals("grande", EncomiendaServicio.tamano("grande", null));
     }
+
+    @Test
+    void categoriaDelDomicilio() {
+        assertEquals("farmacia", ViajeServicio.categoriaDomicilio(" Farmacia "));
+        assertEquals(null, ViajeServicio.categoriaDomicilio(""));
+        assertEquals(null, ViajeServicio.categoriaDomicilio(null));
+        org.junit.jupiter.api.Assertions.assertThrows(com.movify.backend.comun.ReglaNegocioException.class,
+                () -> ViajeServicio.categoriaDomicilio("licores"));
+    }
 }

@@ -2,6 +2,8 @@ package com.movify.backend.servicios;
 
 import static com.movify.backend.servicios.EstadosServicio.*;
 
+import java.math.BigDecimal;
+import java.security.SecureRandom;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -42,6 +44,11 @@ import com.movify.backend.servicios.ServicioDtos.SolicitudRequest;
 public class ViajeServicio {
 
     private static final Logger log = LoggerFactory.getLogger(ViajeServicio.class);
+
+    private static final SecureRandom RANDOM = new SecureRandom();
+    private static final List<String> CATEGORIAS_DOMICILIO = List.of("comida", "farmacia", "mercado", "diligencia");
+    /** Lo máximo que el domiciliario adelanta de su bolsillo por un pedido (propuesta; ajustar con el negocio). */
+    static final BigDecimal TOPE_COMPRA_DOMICILIO = new BigDecimal("500000");
 
     /** Motivo de cancelación por defecto según quién cancela (motivos_cancelacion). */
     private static final Map<String, Short> MOTIVO_POR_DEFECTO = Map.of(
@@ -98,10 +105,14 @@ public class ViajeServicio {
         Long servicioId = Datos.aLong(fila.get("id"));
 
         String codigoEntrega = null;
+        String codigoAbordaje = null;
         switch (tipo) {
             case "domicilio" -> crearDomicilio(servicioId, s);
             case "encomienda" -> codigoEntrega = encomiendas.crear(servicioId, s, clienteId);
             default -> {
+                // Viaje: PIN que el pasajero le dice al conductor para empezar (Figma "Conductor app 4 · PIN")
+                codigoAbordaje = String.format("%04d", RANDOM.nextInt(10_000));
+                db.update("UPDATE servicios SET codigo_abordaje = ? WHERE id = ?", codigoAbordaje, servicioId);
             }
         }
 
@@ -122,6 +133,7 @@ public class ViajeServicio {
         resp.put("estado_codigo", BUSCANDO);
         resp.put("expira_busqueda_en", fila.get("expira_busqueda_en"));
         if (codigoEntrega != null) resp.put("codigo_entrega", codigoEntrega);
+        if (codigoAbordaje != null) resp.put("codigo_abordaje", codigoAbordaje);
         resp.put("message", "Solicitud creada con éxito.");
         return resp;
     }
@@ -143,16 +155,25 @@ public class ViajeServicio {
             for (ItemDomicilio i : s.items()) ContenidoProhibido.exigirPermitido(i.descripcion(), i.notas());
         }
         boolean compra = Boolean.TRUE.equals(s.requiereCompra());
-        if (compra && s.valorProductosAprox() == null) {
+        BigDecimal valor = s.valorProductosAprox();
+        if (compra && (valor == null || valor.signum() <= 0)) {
             throw new ReglaNegocioException(400, "Indica cuánto cuestan más o menos los productos");
         }
+        // El domiciliario pone la plata de su bolsillo: un tope evita pedidos que nadie podría pagar
+        if (compra && valor.compareTo(TOPE_COMPRA_DOMICILIO) > 0) {
+            throw new ReglaNegocioException(400, "Por ahora el domiciliario puede pagar pedidos de hasta $"
+                    + String.format(Locale.ROOT, "%,d", TOPE_COMPRA_DOMICILIO.longValue()).replace(',', '.')
+                    + ". Si ya está pago, elige \"Ya está pago\".");
+        }
+        String categoria = categoriaDomicilio(s.categoria());
         String tel = s.telefonoContacto() == null || s.telefonoContacto().isBlank() ? null
                 : Celular.normalizarContacto(s.telefonoContacto());
         db.update("""
                 INSERT INTO servicio_domicilio (servicio_id, establecimiento, descripcion_pedido, requiere_compra,
-                                                valor_productos_aprox, telefono_contacto)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """, servicioId, Datos.vacioANull(s.establecimiento()), descripcion, compra, s.valorProductosAprox(), tel);
+                                                valor_productos_aprox, telefono_contacto, categoria)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, servicioId, Datos.vacioANull(s.establecimiento()), descripcion, compra, compra ? valor : null, tel,
+                categoria);
         if (s.items() != null) {
             for (ItemDomicilio i : s.items()) {
                 db.update("""
@@ -162,6 +183,17 @@ public class ViajeServicio {
                         i.precioUnitarioAprox(), Datos.vacioANull(i.notas()));
             }
         }
+    }
+
+    /** comida | farmacia | mercado | diligencia (Figma "¿Qué es?"); vacío = sin indicar. */
+    static String categoriaDomicilio(String texto) {
+        String c = Datos.vacioANull(texto);
+        if (c == null) return null;
+        c = c.trim().toLowerCase(Locale.ROOT);
+        if (!CATEGORIAS_DOMICILIO.contains(c)) {
+            throw new ReglaNegocioException(400, "Elige qué es el pedido: comida, farmacia, mercado o diligencia");
+        }
+        return c;
     }
 
     // ═════════════════════════════ Ofertas para el conductor ═════════════════════════════
@@ -230,7 +262,14 @@ public class ViajeServicio {
         if (soyCliente && "encomienda".equals(s.get("tipo_servicio"))) {
             s.put("codigo_entrega", encomiendas.codigoEntrega(servicioId));
         }
+        // El PIN del viaje solo lo ve el pasajero (se lo dice al conductor al subir)
+        if (soyCliente && "transporte".equals(s.get("tipo_servicio"))) {
+            s.put("codigo_abordaje", db.queryForObject("SELECT codigo_abordaje FROM servicios WHERE id = ?", String.class,
+                    servicioId));
+        }
         if ("domicilio".equals(s.get("tipo_servicio"))) {
+            s.put("categoria", db.queryForList("SELECT categoria FROM servicio_domicilio WHERE servicio_id = ?",
+                    String.class, servicioId).stream().findFirst().orElse(null));
             s.put("items", db.queryForList("""
                     SELECT descripcion, cantidad, precio_unitario_aprox, notas FROM servicio_domicilio_items
                     WHERE servicio_id = ? ORDER BY id
@@ -244,7 +283,12 @@ public class ViajeServicio {
                 WHERE s.id = ?
                 """, servicioId).stream().findFirst().ifPresent(s::putAll);
         // El celular del cliente solo lo ve el conductor asignado (y el personal), no quien recibe la oferta
-        if (!soyCliente && !sesion.esPersonal() && !Objects.equals(conductorId, yo.id())) s.remove("usuario_telefono");
+        // Lo mismo con los celulares de remitente y destinatario de una encomienda (vienen en v_servicios_api)
+        if (!soyCliente && !sesion.esPersonal() && !Objects.equals(conductorId, yo.id())) {
+            s.remove("usuario_telefono");
+            s.remove("telefono_remitente");
+            s.remove("telefono_destinatario");
+        }
         s.remove("usuario_id");
         return s;
     }
@@ -381,6 +425,7 @@ public class ViajeServicio {
                 }
                 String anterior = actual;
                 for (String paso : EstadosServicio.pasos(actual, destino)) {
+                    if (EN_CURSO.equals(paso) && "transporte".equals(tipo)) verificarAbordaje(servicioId, req);
                     if (FINALIZADO.equals(paso)) prepararCierre(servicioId, tipo, req, quien);
                     actualizar(servicioId, anterior, paso, null);
                     anterior = paso;
@@ -410,14 +455,38 @@ public class ViajeServicio {
         if (n == 0) throw new ReglaNegocioException("Otro conductor ya tomó este servicio o la solicitud venció");
     }
 
+    /**
+     * Al iniciar el viaje: si el conductor manda el PIN, tiene que ser el del pasajero (así confirma que lleva
+     * a la persona correcta). La app del conductor siempre lo manda; la web todavía no lo pide, por eso sin PIN
+     * se deja pasar. Cuando la web también lo pida, aquí se vuelve obligatorio.
+     */
+    private void verificarAbordaje(Long servicioId, CambioEstadoRequest req) {
+        if (req.codigoAbordaje() == null || req.codigoAbordaje().isBlank()) return;
+        String pin = db.queryForObject("SELECT codigo_abordaje FROM servicios WHERE id = ?", String.class, servicioId);
+        if (pin != null && !pin.equals(req.codigoAbordaje().trim())) {
+            throw new ReglaNegocioException(400, "El PIN no coincide. Pídeselo de nuevo al pasajero.");
+        }
+    }
+
     /** Antes de finalizar: PIN de la encomienda y valor real de la compra del domicilio. */
     private void prepararCierre(Long servicioId, String tipo, CambioEstadoRequest req, String quien) {
         if ("encomienda".equals(tipo)) {
             encomiendas.prepararEntrega(servicioId, req, ActorBd.ADMIN.equals(quien) || ActorBd.SOPORTE.equals(quien));
         }
-        if ("domicilio".equals(tipo) && req.valorCompraReal() != null) {
-            db.update("UPDATE servicio_domicilio SET valor_compra_real = ? WHERE servicio_id = ?", req.valorCompraReal(),
-                    servicioId);
+        if ("domicilio".equals(tipo)) {
+            if (req.valorCompraReal() != null) {
+                if (req.valorCompraReal().signum() < 0) throw new ReglaNegocioException(400, "El valor de la factura no es válido");
+                db.update("UPDATE servicio_domicilio SET valor_compra_real = ? WHERE servicio_id = ?", req.valorCompraReal(),
+                        servicioId);
+            } else {
+                // La BD no deja cerrar una compra sin el valor real: se pide con un mensaje claro
+                Boolean falta = db.queryForObject("""
+                        SELECT requiere_compra AND valor_compra_real IS NULL FROM servicio_domicilio WHERE servicio_id = ?
+                        """, Boolean.class, servicioId);
+                if (Boolean.TRUE.equals(falta)) {
+                    throw new ReglaNegocioException(400, "Escribe cuánto pagaste en la tienda (lo que dice la factura)");
+                }
+            }
         }
     }
 

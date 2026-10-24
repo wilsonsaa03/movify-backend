@@ -51,6 +51,8 @@ public final class ServicioDtos {
             @JsonProperty("valor_productos_aprox") BigDecimal valorProductosAprox,
             @Size(max = 20) @JsonProperty("telefono_contacto") String telefonoContacto,
             @Valid List<ItemDomicilio> items,
+            /** comida | farmacia | mercado | diligencia (V12). */
+            @Size(max = 12) String categoria,
             // Encomienda
             @Size(max = 120) @JsonProperty("nombre_remitente") String nombreRemitente,
             @Size(max = 20) @JsonProperty("telefono_remitente") String telefonoRemitente,
@@ -81,6 +83,8 @@ public final class ServicioDtos {
             @Size(max = 300) String motivo,
             @JsonProperty("motivo_id") Short motivoId,
             @Size(max = 4) @JsonProperty("codigo_entrega") String codigoEntrega,
+            /** PIN del viaje que el pasajero le dice al conductor al subir (V13). */
+            @Size(max = 4) @JsonProperty("codigo_abordaje") String codigoAbordaje,
             @Size(max = 120) @JsonProperty("entregado_a") String entregadoA,
             @JsonProperty("valor_compra_real") BigDecimal valorCompraReal) {
     }

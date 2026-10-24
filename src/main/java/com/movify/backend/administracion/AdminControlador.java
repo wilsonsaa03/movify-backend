@@ -155,7 +155,7 @@ public class AdminControlador {
     public Map<String, Object> cancelarServicio(@PathVariable Long id, @RequestBody(required = false) Map<String, Object> body) {
         Short motivo = body != null && body.get("motivo_id") instanceof Number n ? n.shortValue() : null;
         String detalle = body == null ? null : (String) body.get("motivo");
-        return viajes.cambiarEstado(id, new CambioEstadoRequest("cancelado", detalle, motivo, null, null, null));
+        return viajes.cambiarEstado(id, new CambioEstadoRequest("cancelado", detalle, motivo, null, null, null, null));
     }
 
     @GetMapping("/api/admin/resumen")
