@@ -3,6 +3,7 @@ package com.movify.backend.servicios;
 import static com.movify.backend.servicios.EstadosServicio.*;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.security.SecureRandom;
 import java.util.HashMap;
 import java.util.List;
@@ -19,12 +20,15 @@ import org.springframework.transaction.annotation.Transactional;
 
 import org.springframework.web.multipart.MultipartFile;
 
+import com.movify.backend.autenticacion.sms.SmsEnviador;
 import com.movify.backend.comun.AccesoDenegadoException;
 import com.movify.backend.comun.ArchivoServicio;
 import com.movify.backend.comun.ActorBd;
 import com.movify.backend.comun.Celular;
 import com.movify.backend.comun.ContenidoProhibido;
 import com.movify.backend.comun.Datos;
+import com.movify.backend.comun.DespuesDelCommit;
+import com.movify.backend.notificaciones.NotificacionServicio;
 import com.movify.backend.comun.RecursoNoEncontradoException;
 import com.movify.backend.comun.ReglaNegocioException;
 import com.movify.backend.comun.Roles;
@@ -49,11 +53,14 @@ public class ViajeServicio {
     private static final List<String> CATEGORIAS_DOMICILIO = List.of("comida", "farmacia", "mercado", "diligencia");
     /** Lo máximo que el domiciliario adelanta de su bolsillo por un pedido (propuesta; ajustar con el negocio). */
     static final BigDecimal TOPE_COMPRA_DOMICILIO = new BigDecimal("500000");
+    private static final BigDecimal CIEN = new BigDecimal("100");
 
     /** Motivo de cancelación por defecto según quién cancela (motivos_cancelacion). */
     private static final Map<String, Short> MOTIVO_POR_DEFECTO = Map.of(
             ActorBd.CLIENTE, (short) 1, ActorBd.CONDUCTOR, (short) 11, ActorBd.ADMIN, (short) 20,
             ActorBd.SOPORTE, (short) 20);
+    /** motivos_cancelacion 10: "El cliente no se presentó" (solo después del tiempo de espera). */
+    private static final Short MOTIVO_NO_SE_PRESENTO = 10;
 
     private final JdbcTemplate db;
     private final SesionActual sesion;
@@ -61,47 +68,66 @@ public class ViajeServicio {
     private final ActorBd actor;
     private final ObjectProvider<SimulacionDemo> simulacion;
     private final EncomiendaServicio encomiendas;
+    private final NotificacionServicio avisos;
+    private final SmsEnviador sms;
 
     public ViajeServicio(JdbcTemplate db, SesionActual sesion, TarifaServicio tarifas, ActorBd actor,
-            ObjectProvider<SimulacionDemo> simulacion, EncomiendaServicio encomiendas) {
+            ObjectProvider<SimulacionDemo> simulacion, EncomiendaServicio encomiendas, NotificacionServicio avisos,
+            SmsEnviador sms) {
         this.db = db;
         this.sesion = sesion;
         this.tarifas = tarifas;
         this.actor = actor;
         this.simulacion = simulacion;
         this.encomiendas = encomiendas;
+        this.avisos = avisos;
+        this.sms = sms;
     }
 
     // ═════════════════════════════ Solicitud ═════════════════════════════
 
     @Transactional
     public Map<String, Object> crearSolicitud(SolicitudRequest s) {
-        Long clienteId = sesion.usuarioId();
+        return crearSolicitud(sesion.usuarioId(), s);
+    }
+
+    /** También la usan los viajes programados (el cliente no está en sesión: lo lanza una tarea). */
+    @Transactional
+    public Map<String, Object> crearSolicitud(Long clienteId, SolicitudRequest s) {
         String tipo = EstadosServicio.tipoServicio(s.tipo());
         String vehiculo = s.tipoVehiculo() == null || s.tipoVehiculo().isBlank()
                 ? "moto" : s.tipoVehiculo().trim().toLowerCase(Locale.ROOT);
         if (s.metodoPago() != null && !s.metodoPago().isBlank() && !"efectivo".equalsIgnoreCase(s.metodoPago().trim())) {
             throw new ReglaNegocioException(400, "Por ahora en MoviFY solo se paga en efectivo.");
         }
+        Extras x = extras(s, tipo, vehiculo, clienteId);
 
-        TarifaServicio.Ruta ruta = tarifas.ruta(s.origenLat(), s.origenLng(), s.destinoLat(), s.destinoLng());
+        TarifaServicio.Ruta ruta = tarifas.ruta(s.origenLat(), s.origenLng(), x.paradaLat(), x.paradaLng(),
+                s.destinoLat(), s.destinoLng());
+        // Lo que cotiza MoviFY; el cliente puede ofrecer más (estilo inDrive) hasta un tope
+        BigDecimal cotizado = tarifas.cotizar(tipo, vehiculo, ruta);
+        BigDecimal valor = valorOfrecido(s.valorOfrecido(), cotizado);
         actor.declarar(clienteId, ActorBd.CLIENTE);
 
         Map<String, Object> fila = db.queryForMap("""
                 INSERT INTO servicios (tipo_servicio, tipo_vehiculo, cliente_id,
                     origen_direccion, origen_barrio, origen_referencia, origen_lat, origen_lng,
                     destino_direccion, destino_barrio, destino_referencia, destino_lat, destino_lng,
-                    distancia_km, duracion_estimada_min, pasajeros, notas_cliente)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    distancia_km, duracion_estimada_min, pasajeros, notas_cliente,
+                    valor_estimado, valor_sugerido, pasajero_nombre, pasajero_telefono,
+                    necesita_casco, lleva_equipaje, lleva_mascota, parada_direccion, parada_lat, parada_lng)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id, valor_estimado, expira_busqueda_en
                 """, tipo, vehiculo, clienteId,
                 direccion(s.origen(), s.origenLat(), s.origenLng()), Datos.vacioANull(s.origenBarrio()),
                 Datos.vacioANull(s.origenReferencia()), s.origenLat(), s.origenLng(),
                 direccion(s.destino(), s.destinoLat(), s.destinoLng()), Datos.vacioANull(s.destinoBarrio()),
                 Datos.vacioANull(s.destinoReferencia()), s.destinoLat(), s.destinoLng(),
-                ruta.distanciaKm(), ruta.duracionMin(), s.pasajeros() == null ? 1 : s.pasajeros(),
+                ruta.distanciaKm(), ruta.duracionMin(), x.pasajeros(),
                 Datos.vacioANull("transporte".equals(tipo) ? Datos.recortar(firstNonBlank(s.notas(), s.descripcion()), 300)
-                        : s.notas()));
+                        : s.notas()),
+                valor, cotizado, x.pasajeroNombre(), x.pasajeroTelefono(), x.casco(), x.equipaje(), x.mascota(),
+                x.parada(), x.paradaLat(), x.paradaLng());
         Long servicioId = Datos.aLong(fila.get("id"));
 
         String codigoEntrega = null;
@@ -116,7 +142,7 @@ public class ViajeServicio {
             }
         }
 
-        int notificados = ofertar(servicioId, s.origenLat(), s.origenLng(), vehiculo, clienteId);
+        int notificados = ofertar(servicioId);
         log.info("Servicio {} ({} en {}) creado; {} conductores notificados", servicioId, tipo, vehiculo, notificados);
 
         // Solo existe si app.demo.simulacion=true (nunca en producción)
@@ -138,13 +164,113 @@ public class ViajeServicio {
         return resp;
     }
 
-    private int ofertar(Long servicioId, double lat, double lng, String vehiculo, Long clienteId) {
-        return db.update("""
+    /**
+     * Le ofrece el servicio a los conductores libres cercanos (y a los favoritos del cliente, con más radio).
+     * Si el pasajero pidió casco, solo a motos que lo llevan. A cada uno le llega un push.
+     * @return cuántos conductores nuevos lo recibieron.
+     */
+    int ofertar(Long servicioId) {
+        Map<String, Object> s = db.queryForMap("""
+                SELECT tipo_servicio, tipo_vehiculo, cliente_id, origen_lat, origen_lng, necesita_casco, valor_estimado
+                FROM servicios WHERE id = ?
+                """, servicioId);
+        double lat = Datos.num(s.get("origen_lat"));
+        double lng = Datos.num(s.get("origen_lng"));
+        String vehiculo = String.valueOf(s.get("tipo_vehiculo"));
+        Long clienteId = Datos.aLong(s.get("cliente_id"));
+        List<Long> nuevos = db.queryForList("""
                 INSERT INTO servicio_ofertas (servicio_id, conductor_id, distancia_km)
                 SELECT ?, c.conductor_id, round(c.distancia_km::numeric, 2)
-                FROM fn_conductores_cercanos(?, ?, fn_config_num('radio_busqueda_km', 5)::float8, ?, ?) c
+                FROM (SELECT conductor_id, vehiculo_id, distancia_km
+                        FROM fn_conductores_cercanos(?, ?, fn_config_num('radio_busqueda_km', 5)::float8, ?, ?)
+                      UNION
+                      SELECT f.conductor_id, f.vehiculo_id, f.distancia_km
+                        FROM fn_conductores_cercanos(?, ?, fn_config_num('radio_favoritos_km', 8)::float8, ?, ?) f
+                        JOIN conductores_favoritos cf ON cf.conductor_id = f.conductor_id AND cf.cliente_id = ?) c
+                JOIN vehiculos v ON v.id = c.vehiculo_id
+                WHERE NOT ? OR v.casco_pasajero IS TRUE
                 ON CONFLICT DO NOTHING
-                """, servicioId, lat, lng, vehiculo, clienteId);
+                RETURNING conductor_id
+                """, Long.class, servicioId, lat, lng, vehiculo, clienteId, lat, lng, vehiculo, clienteId, clienteId,
+                Boolean.TRUE.equals(s.get("necesita_casco")));
+        if (!nuevos.isEmpty()) {
+            String que = switch (String.valueOf(s.get("tipo_servicio"))) {
+                case "domicilio" -> "Nuevo domicilio";
+                case "encomienda" -> "Nueva encomienda";
+                default -> "Nueva solicitud de " + vehiculo;
+            };
+            avisos.avisarVarios(nuevos, servicioId, NotificacionServicio.SOLICITUD, "solicitud", "¡" + que + "!",
+                    "Gana " + pesos(s.get("valor_estimado")) + ". Tienes unos segundos para aceptar.");
+        }
+        return nuevos.size();
+    }
+
+    /** Lo que trae una solicitud de viaje además del origen y el destino, ya validado. */
+    private record Extras(int pasajeros, boolean casco, boolean equipaje, boolean mascota, String pasajeroNombre,
+            String pasajeroTelefono, String parada, Double paradaLat, Double paradaLng) {
+    }
+
+    private Extras extras(SolicitudRequest s, String tipo, String vehiculo, Long clienteId) {
+        boolean transporte = "transporte".equals(tipo);
+        int pasajeros = s.pasajeros() == null ? 1 : s.pasajeros();
+        if (transporte && "moto".equals(vehiculo) && pasajeros > 1) {
+            throw new ReglaNegocioException(400, "En moto viaja 1 pasajero. Para más personas pide un taxi.");
+        }
+        if (transporte && "taxi".equals(vehiculo) && pasajeros > 4) {
+            throw new ReglaNegocioException(400, "En un taxi caben hasta 4 pasajeros.");
+        }
+        boolean casco = Boolean.TRUE.equals(s.necesitaCasco());
+        if (casco && !("moto".equals(vehiculo) && transporte)) {
+            throw new ReglaNegocioException(400, "El casco para el pasajero solo aplica en viajes en moto.");
+        }
+
+        String nombre = null;
+        String telefono = null;
+        if (Datos.vacioANull(s.pasajeroNombre()) != null || Datos.vacioANull(s.pasajeroTelefono()) != null) {
+            if (!transporte) throw new ReglaNegocioException(400, "Pedir para otra persona solo aplica en viajes.");
+            nombre = Datos.vacioANull(s.pasajeroNombre());
+            if (nombre == null) throw new ReglaNegocioException(400, "Escribe el nombre de quien va a viajar");
+            telefono = Celular.exigir(s.pasajeroTelefono());
+            String propio = db.queryForObject("SELECT telefono FROM usuarios WHERE id = ?", String.class, clienteId);
+            // Si pone su propio número, el viaje es para él mismo
+            if (telefono.equals(propio)) {
+                nombre = null;
+                telefono = null;
+            }
+        }
+
+        String parada = null;
+        Double pLat = null;
+        Double pLng = null;
+        if (s.paradaLat() != null || s.paradaLng() != null) {
+            if (!transporte) throw new ReglaNegocioException(400, "Las paradas solo aplican en viajes.");
+            if (s.paradaLat() == null || s.paradaLng() == null) {
+                throw new ReglaNegocioException(400, "Marca la parada en el mapa");
+            }
+            pLat = s.paradaLat();
+            pLng = s.paradaLng();
+            parada = direccion(s.parada(), pLat, pLng);
+        }
+        return new Extras(pasajeros, casco, transporte && Boolean.TRUE.equals(s.llevaEquipaje()),
+                transporte && Boolean.TRUE.equals(s.llevaMascota()), Datos.recortar(nombre, 80), telefono, parada, pLat,
+                pLng);
+    }
+
+    /** null = lo cotizado. Si ofrece más: redondeado a la centena, nunca menos de lo cotizado ni más del tope. */
+    private BigDecimal valorOfrecido(BigDecimal ofrecido, BigDecimal cotizado) {
+        if (ofrecido == null || ofrecido.compareTo(cotizado) <= 0) return cotizado;
+        BigDecimal valor = ofrecido.divide(CIEN, 0, RoundingMode.CEILING).multiply(CIEN);
+        BigDecimal tope = tarifas.maximoOfrecible(cotizado);
+        if (valor.compareTo(tope) > 0) {
+            throw new ReglaNegocioException(400, "Puedes ofrecer hasta " + pesos(tope) + " por este viaje.");
+        }
+        return valor;
+    }
+
+    /** $12.500 */
+    static String pesos(Object valor) {
+        long v = valor instanceof Number n ? Math.round(n.doubleValue()) : 0;
+        return "$" + String.format(Locale.ROOT, "%,d", v).replace(',', '.');
     }
 
     private void crearDomicilio(Long servicioId, SolicitudRequest s) {
@@ -219,7 +345,9 @@ public class ViajeServicio {
                        v.tipo_vehiculo, v.descripcion, v.origen_lat, v.origen_lng, v.destino_lat, v.destino_lng,
                        v.origen, v.destino, v.origen_referencia, v.distancia_km, v.duracion_estimada_min,
                        v.valor_estimado AS tarifa, v.pasajeros, o.distancia_km AS distancia_al_origen_km,
-                       v.usuario_nombre, v.expira_busqueda_en, v.estado, s.nota_voz_segundos
+                       v.usuario_nombre, v.expira_busqueda_en, v.estado, s.nota_voz_segundos,
+                       v.pasajero_nombre, v.necesita_casco, v.lleva_equipaje, v.lleva_mascota, v.parada,
+                       v.parada_lat, v.parada_lng, (v.valor_estimado > v.valor_sugerido) AS tarifa_subida
                 FROM servicio_ofertas o
                 JOIN v_servicios_api v ON v.id = o.servicio_id
                 JOIN servicios s ON s.id = o.servicio_id
@@ -250,14 +378,33 @@ public class ViajeServicio {
                            u.foto_url AS conductor_foto, u.telefono AS conductor_telefono,
                            c.calificacion_promedio AS conductor_calificacion,
                            v.placa AS conductor_placa, trim(v.marca || ' ' || COALESCE(v.linea, '')) AS conductor_modelo,
-                           v.color AS conductor_color, v.tipo_vehiculo AS conductor_vehiculo
+                           v.color AS conductor_color, v.tipo_vehiculo AS conductor_vehiculo,
+                           v.casco_pasajero AS conductor_casco, c.total_servicios AS conductor_viajes,
+                           ub.rumbo_grados AS conductor_rumbo,
+                           EXISTS (SELECT 1 FROM documentos_conductor d
+                                    WHERE d.vehiculo_id = v.id AND d.tipo_documento = 'foto_frente' AND d.vigente
+                                      AND d.mime_type LIKE 'image/%') AS conductor_vehiculo_foto
                     FROM conductores c
                     JOIN usuarios u ON u.id = c.usuario_id
                     LEFT JOIN ubicacion_conductores ub ON ub.conductor_id = c.usuario_id
                     LEFT JOIN vehiculos v ON v.id = ?
                     WHERE c.usuario_id = ?
                     """, s.get("vehiculo_id"), conductorId).stream().findFirst().ifPresent(s::putAll);
+            if (soyCliente) {
+                s.put("es_favorito", db.queryForObject(
+                        "SELECT EXISTS (SELECT 1 FROM conductores_favoritos WHERE cliente_id = ? AND conductor_id = ?)",
+                        Boolean.class, yo.id(), conductorId));
+            }
         }
+        // Cuánto espera el conductor en la recogida (después puede marcar "no se presentó")
+        db.queryForList("""
+                SELECT llegada_origen_en + make_interval(mins => fn_config_num('minutos_espera_conductor', 5)::int)
+                       AS espera_hasta,
+                       (SELECT count(*) FROM mensajes_servicio m
+                         WHERE m.servicio_id = s.id AND m.remitente_id <> ? AND m.leido_en IS NULL) AS mensajes_sin_leer,
+                       aumentos_tarifa
+                FROM servicios s WHERE s.id = ?
+                """, yo.id(), servicioId).stream().findFirst().ifPresent(s::putAll);
         // El PIN de entrega solo lo ve quien pidió la encomienda (se lo pasa al destinatario)
         if (soyCliente && "encomienda".equals(s.get("tipo_servicio"))) {
             s.put("codigo_entrega", encomiendas.codigoEntrega(servicioId));
@@ -286,6 +433,7 @@ public class ViajeServicio {
         // Lo mismo con los celulares de remitente y destinatario de una encomienda (vienen en v_servicios_api)
         if (!soyCliente && !sesion.esPersonal() && !Objects.equals(conductorId, yo.id())) {
             s.remove("usuario_telefono");
+            s.remove("pasajero_telefono");
             s.remove("telefono_remitente");
             s.remove("telefono_destinatario");
         }
@@ -397,24 +545,34 @@ public class ViajeServicio {
             case ASIGNADO -> {
                 if (!ActorBd.CONDUCTOR.equals(quien)) throw new AccesoDenegadoException("Solo un conductor puede aceptar");
                 aceptar(servicioId, yo.id(), String.valueOf(s.get("tipo_vehiculo")));
+                avisarAsignado(servicioId, tipo, cliente);
                 return respuesta(servicioId, tipo, ASIGNADO, "Servicio aceptado. Ve a recoger al cliente.");
             }
             case CANCELADO -> {
                 // El conductor no "cancela" un servicio recién aceptado: lo suelta y vuelve a buscarse otro conductor
                 if (ActorBd.CONDUCTOR.equals(quien) && ASIGNADO.equals(actual)) {
                     actualizar(servicioId, actual, BUSCANDO, null);
-                    Map<String, Object> o = db.queryForMap(
-                            "SELECT origen_lat, origen_lng FROM servicios WHERE id = ?", servicioId);
-                    ofertar(servicioId, Datos.num(o.get("origen_lat")), Datos.num(o.get("origen_lng")),
-                            String.valueOf(s.get("tipo_vehiculo")), cliente);
+                    ofertar(servicioId);
+                    avisos.avisar(cliente, servicioId, NotificacionServicio.ESTADO, "buscando",
+                            "Buscamos otro conductor", "Tu conductor no pudo ir. Ya le avisamos a otros cercanos.");
                     return respuesta(servicioId, tipo, BUSCANDO, "Soltaste el servicio. Buscaremos otro conductor.");
                 }
                 Short motivo = req.motivoId() != null ? req.motivoId() : MOTIVO_POR_DEFECTO.get(quien);
+                if (ActorBd.CONDUCTOR.equals(quien) && MOTIVO_NO_SE_PRESENTO.equals(motivo)) exigirEsperaCumplida(servicioId);
                 db.update("""
                         UPDATE servicios SET estado = 'cancelado', motivo_cancelacion_id = ?, detalle_cancelacion = ?,
                                              cancelado_por = ?
                         WHERE id = ? AND estado = ?
                         """, motivo, Datos.vacioANull(req.motivo()), yo.id(), servicioId, actual);
+                if (ActorBd.CLIENTE.equals(quien) && conductor != null) {
+                    avisos.avisar(conductor, servicioId, NotificacionServicio.ESTADO, "cancelado",
+                            "El pasajero canceló", "Ya puedes recibir otras solicitudes.");
+                } else if (!ActorBd.CLIENTE.equals(quien)) {
+                    avisos.avisar(cliente, servicioId, NotificacionServicio.ESTADO, "cancelado",
+                            "Tu servicio fue cancelado", ActorBd.CONDUCTOR.equals(quien)
+                                    ? "El conductor canceló. Puedes pedir otro cuando quieras."
+                                    : "Soporte de MoviFY canceló el servicio.");
+                }
                 return respuesta(servicioId, tipo, CANCELADO, "Servicio cancelado.");
             }
             case BUSCANDO -> throw new ReglaNegocioException(400, "Estado no válido para este cambio");
@@ -430,8 +588,82 @@ public class ViajeServicio {
                     actualizar(servicioId, anterior, paso, null);
                     anterior = paso;
                 }
+                avisarAvance(servicioId, tipo, destino, cliente);
                 return respuesta(servicioId, tipo, destino, "Estado actualizado.");
             }
+        }
+    }
+
+    /** "Carlos va por ti" al cliente y, si el viaje es para otra persona, un SMS a quien viaja. */
+    private void avisarAsignado(Long servicioId, String tipo, Long cliente) {
+        Map<String, Object> d = db.queryForMap("""
+                SELECT split_part(trim(u.nombres), ' ', 1) AS conductor, v.placa, v.color,
+                       trim(v.marca || ' ' || COALESCE(v.linea, '')) AS modelo, s.tipo_vehiculo,
+                       s.pasajero_nombre, s.pasajero_telefono, s.codigo_abordaje,
+                       split_part(trim(c.nombres), ' ', 1) AS cliente
+                FROM servicios s
+                JOIN usuarios u ON u.id = s.conductor_id
+                JOIN vehiculos v ON v.id = s.vehiculo_id
+                JOIN usuarios c ON c.id = s.cliente_id
+                WHERE s.id = ?
+                """, servicioId);
+        String conductor = String.valueOf(d.get("conductor"));
+        String vehiculo = d.get("modelo") + " " + d.get("color") + " · " + d.get("placa");
+        String titulo = switch (tipo) {
+            case "domicilio" -> conductor + " tomó tu domicilio";
+            case "encomienda" -> conductor + " va a recoger tu paquete";
+            default -> conductor + " va por ti";
+        };
+        avisos.avisar(cliente, servicioId, NotificacionServicio.ESTADO, "asignado", titulo, vehiculo);
+
+        String tel = (String) d.get("pasajero_telefono");
+        if (tel != null) {
+            String texto = "MoviFY: " + d.get("cliente") + " te pidio un " + d.get("tipo_vehiculo") + ". Te recoge "
+                    + conductor + " en " + vehiculo + ". Tu PIN para empezar el viaje: " + d.get("codigo_abordaje");
+            DespuesDelCommit.ejecutar(() -> {
+                try {
+                    sms.enviar(tel, texto);
+                } catch (RuntimeException e) {
+                    log.warn("No se pudo enviar el SMS al pasajero del servicio {}: {}", servicioId, e.getMessage());
+                }
+            });
+        }
+    }
+
+    /** Llegó, empezó o terminó: el cliente se entera aunque tenga la app cerrada. */
+    private void avisarAvance(Long servicioId, String tipo, String estado, Long cliente) {
+        boolean viaje = "transporte".equals(tipo);
+        switch (estado) {
+            case EN_ORIGEN -> avisos.avisar(cliente, servicioId, NotificacionServicio.ESTADO, "en_origen",
+                    viaje ? "Tu conductor llegó" : "El conductor llegó a la recogida",
+                    viaje ? "Te está esperando. Ten a mano tu PIN de viaje." : "Está recogiendo tu pedido.");
+            case EN_CURSO -> {
+                if (!viaje) avisos.avisar(cliente, servicioId, NotificacionServicio.ESTADO, "en_curso",
+                        "Tu pedido va en camino", "El conductor ya lo recogió.");
+            }
+            case FINALIZADO -> avisos.avisar(cliente, servicioId, NotificacionServicio.ESTADO, "finalizado",
+                    viaje ? "¡Llegaste!" : "¡Entregado!", "Cuéntanos cómo te fue: califica el servicio.");
+            default -> {
+                // Sin aviso para otros estados
+            }
+        }
+    }
+
+    /** "No se presentó" solo después del tiempo de espera, para no dejar a nadie tirado. */
+    private void exigirEsperaCumplida(Long servicioId) {
+        Map<String, Object> e = db.queryForMap("""
+                SELECT estado, llegada_origen_en + make_interval(mins => fn_config_num('minutos_espera_conductor', 5)::int)
+                       > now() AS falta,
+                       to_char((llegada_origen_en + make_interval(mins => fn_config_num('minutos_espera_conductor', 5)::int))
+                               AT TIME ZONE 'America/Bogota', 'HH24:MI') AS hora
+                FROM servicios WHERE id = ?
+                """, servicioId);
+        if (!EN_ORIGEN.equals(e.get("estado"))) {
+            throw new ReglaNegocioException(400, "Primero marca que llegaste a la recogida.");
+        }
+        if (Boolean.TRUE.equals(e.get("falta"))) {
+            throw new ReglaNegocioException(400, "Espera al pasajero hasta las " + e.get("hora")
+                    + ". Si no aparece, ya podrás cancelar sin que te cuente.");
         }
     }
 

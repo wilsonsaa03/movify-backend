@@ -64,7 +64,65 @@ public final class ServicioDtos {
             Boolean fragil,
             @JsonProperty("valor_declarado") BigDecimal valorDeclarado,
             /** true = el conductor le cobra a quien recibe (V11). */
-            @JsonProperty("paga_destinatario") Boolean pagaDestinatario) {
+            @JsonProperty("paga_destinatario") Boolean pagaDestinatario,
+            // Viaje (V14)
+            /** Moto: el pasajero no tiene casco; solo se ofrece a motos que llevan uno. */
+            @JsonProperty("necesita_casco") Boolean necesitaCasco,
+            @JsonProperty("lleva_equipaje") Boolean llevaEquipaje,
+            @JsonProperty("lleva_mascota") Boolean llevaMascota,
+            /** Si el viaje es para otra persona. */
+            @Size(max = 80) @JsonProperty("pasajero_nombre") String pasajeroNombre,
+            @Size(max = 20) @JsonProperty("pasajero_telefono") String pasajeroTelefono,
+            /** Una parada en el camino. */
+            @Size(max = 200) String parada,
+            @DecimalMin("-90") @DecimalMax("90") @JsonProperty("parada_lat") Double paradaLat,
+            @DecimalMin("-180") @DecimalMax("180") @JsonProperty("parada_lng") Double paradaLng,
+            /** Lo que el cliente ofrece pagar (≥ lo cotizado, con tope); null = lo cotizado. */
+            @JsonProperty("valor_ofrecido") BigDecimal valorOfrecido) {
+    }
+
+    /** "Subir tarifa" mientras se busca conductor. */
+    public record SubirTarifaRequest(@NotNull @DecimalMin("100") BigDecimal valor) {
+    }
+
+    /** Cambiar el destino (y la parada) con el viaje andando. Sin parada_lat = sin parada. */
+    public record CambioDestinoRequest(
+            @NotBlank @Size(max = 200) String destino,
+            @Size(max = 80) @JsonProperty("destino_barrio") String destinoBarrio,
+            @NotNull @DecimalMin("-90") @DecimalMax("90") @JsonProperty("destino_lat") Double destinoLat,
+            @NotNull @DecimalMin("-180") @DecimalMax("180") @JsonProperty("destino_lng") Double destinoLng,
+            @Size(max = 200) String parada,
+            @DecimalMin("-90") @DecimalMax("90") @JsonProperty("parada_lat") Double paradaLat,
+            @DecimalMin("-180") @DecimalMax("180") @JsonProperty("parada_lng") Double paradaLng) {
+    }
+
+    /** La app detectó un desvío o una parada larga y el pasajero respondió "¿Todo bien?". */
+    public record AlertaViajeRequest(
+            @NotBlank @jakarta.validation.constraints.Pattern(regexp = "desvio|detenido") String tipo,
+            @NotBlank @jakarta.validation.constraints.Pattern(regexp = "estoy_bien|sos|sin_respuesta") String respuesta,
+            @DecimalMin("-90") @DecimalMax("90") Double lat,
+            @DecimalMin("-180") @DecimalMax("180") Double lng) {
+    }
+
+    /** Programar un viaje en moto o taxi para más tarde. */
+    public record ProgramadoRequest(
+            @NotNull @JsonProperty("programado_para") java.time.OffsetDateTime programadoPara,
+            @NotBlank @Size(max = 10) @JsonProperty("tipo_vehiculo") String tipoVehiculo,
+            @NotNull @DecimalMin("-90") @DecimalMax("90") @JsonProperty("origen_lat") Double origenLat,
+            @NotNull @DecimalMin("-180") @DecimalMax("180") @JsonProperty("origen_lng") Double origenLng,
+            @NotNull @DecimalMin("-90") @DecimalMax("90") @JsonProperty("destino_lat") Double destinoLat,
+            @NotNull @DecimalMin("-180") @DecimalMax("180") @JsonProperty("destino_lng") Double destinoLng,
+            @Size(max = 200) String origen,
+            @Size(max = 80) @JsonProperty("origen_barrio") String origenBarrio,
+            @Size(max = 200) @JsonProperty("origen_referencia") String origenReferencia,
+            @Size(max = 200) String destino,
+            @Size(max = 80) @JsonProperty("destino_barrio") String destinoBarrio,
+            @Min(1) @Max(4) Integer pasajeros,
+            @JsonProperty("necesita_casco") Boolean necesitaCasco,
+            @JsonProperty("lleva_equipaje") Boolean llevaEquipaje,
+            @JsonProperty("lleva_mascota") Boolean llevaMascota,
+            @Size(max = 80) @JsonProperty("pasajero_nombre") String pasajeroNombre,
+            @Size(max = 20) @JsonProperty("pasajero_telefono") String pasajeroTelefono) {
     }
 
     public record ItemDomicilio(

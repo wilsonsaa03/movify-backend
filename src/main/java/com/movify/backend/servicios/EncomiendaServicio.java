@@ -11,11 +11,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.movify.backend.autenticacion.sms.SmsEnviador;
 import com.movify.backend.comun.Celular;
+import com.movify.backend.comun.DespuesDelCommit;
 import com.movify.backend.comun.ContenidoProhibido;
 import com.movify.backend.comun.Datos;
 import com.movify.backend.comun.RecursoNoEncontradoException;
@@ -88,7 +87,7 @@ public class EncomiendaServicio {
         if (!telDestinatario.equals(telRemitente)) {
             String texto = "MoviFY: " + Datos.recortar(remitente, 40) + " te envia un paquete. Cuando llegue, dale al "
                     + "conductor este codigo de entrega: " + pin;
-            alConfirmar(() -> {
+            DespuesDelCommit.ejecutar(() -> {
                 try {
                     sms.enviar(telDestinatario, texto);
                 } catch (RuntimeException e) {
@@ -97,20 +96,6 @@ public class EncomiendaServicio {
             });
         }
         return pin;
-    }
-
-    /** Corre la acción después del commit (o enseguida si no hay transacción, p. ej. en pruebas). */
-    private static void alConfirmar(Runnable accion) {
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    accion.run();
-                }
-            });
-        } else {
-            accion.run();
-        }
     }
 
     /** "documento", "caja-pequeña"... (web) → pequeno | mediano | grande. */

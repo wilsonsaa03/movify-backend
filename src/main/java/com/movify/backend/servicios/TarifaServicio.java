@@ -73,6 +73,35 @@ public class TarifaServicio {
         return new Ruta(redondear(km), (int) Math.ceil(km * MINUTOS_POR_KM));
     }
 
+    /** Ruta pasando por una parada (si hay): se suman los dos tramos. */
+    public Ruta ruta(double oLat, double oLng, Double pLat, Double pLng, double dLat, double dLng) {
+        if (pLat == null || pLng == null) return ruta(oLat, oLng, dLat, dLng);
+        Ruta a = ruta(oLat, oLng, pLat, pLng);
+        Ruta b = ruta(pLat, pLng, dLat, dLng);
+        return new Ruta(a.distanciaKm().add(b.distanciaKm()), a.duracionMin() + b.duracionMin());
+    }
+
+    /** ¿Ahora corre el recargo nocturno? (misma hora de Colombia que usa fn_calcular_tarifa). */
+    public boolean esNocturno() {
+        return Boolean.TRUE.equals(db.queryForObject("""
+                SELECT h >= fn_config_num('hora_inicio_nocturno', 21) OR h < fn_config_num('hora_fin_nocturno', 5)
+                FROM (SELECT EXTRACT(HOUR FROM now() AT TIME ZONE 'America/Bogota') AS h) x
+                """, Boolean.class));
+    }
+
+    /** % de recargo nocturno de la tarifa activa (0 si no tiene). */
+    public BigDecimal recargoNocturnoPct(String tipoServicio, String tipoVehiculo) {
+        return db.queryForList("""
+                SELECT recargo_nocturno_pct FROM tarifas WHERE tipo_servicio = ? AND tipo_vehiculo = ? AND activo
+                """, BigDecimal.class, tipoServicio, tipoVehiculo).stream().findFirst().orElse(BigDecimal.ZERO);
+    }
+
+    /** Lo máximo que el cliente puede ofrecer sobre lo cotizado (max_aumento_tarifa_pct, 100 % por defecto). */
+    public BigDecimal maximoOfrecible(BigDecimal cotizado) {
+        BigDecimal pct = db.queryForObject("SELECT fn_config_num('max_aumento_tarifa_pct', 100)", BigDecimal.class);
+        return cotizado.multiply(BigDecimal.ONE.add(pct.movePointLeft(2))).setScale(0, RoundingMode.DOWN);
+    }
+
     /** Valor que cobraría hoy la tarifa activa (incluye recargo nocturno y mínimo). */
     public BigDecimal cotizar(String tipoServicio, String tipoVehiculo, Ruta ruta) {
         return db.queryForObject("SELECT fn_cotizar(?::varchar, ?::varchar, ?::numeric, ?::numeric)", BigDecimal.class,
@@ -88,9 +117,14 @@ public class TarifaServicio {
                 ORDER BY p.tipo_vehiculo
                 """, String.class, tipoServicio, tipoVehiculo, tipoVehiculo);
         List<Map<String, Object>> r = new ArrayList<>();
+        boolean nocturno = esNocturno();
         for (String v : vehiculos) {
-            r.add(Map.of("tipo_servicio", tipoServicio, "tipo_vehiculo", v, "valor_estimado", cotizar(tipoServicio, v, ruta),
-                    "distancia_km", ruta.distanciaKm(), "duracion_min", ruta.duracionMin()));
+            BigDecimal valor = cotizar(tipoServicio, v, ruta);
+            // "Incluye recargo nocturno del 15 %": la app explica por qué de noche cuesta más
+            BigDecimal recargo = nocturno ? recargoNocturnoPct(tipoServicio, v) : BigDecimal.ZERO;
+            r.add(Map.of("tipo_servicio", tipoServicio, "tipo_vehiculo", v, "valor_estimado", valor,
+                    "distancia_km", ruta.distanciaKm(), "duracion_min", ruta.duracionMin(),
+                    "recargo_nocturno_pct", recargo, "valor_maximo", maximoOfrecible(valor)));
         }
         return r;
     }

@@ -69,6 +69,8 @@ public class SecurityConfig {
                                 "/api/auth/restablecer-password").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/test/ping", "/api/catalogos/**", "/api/tarifas/cotizar")
                             .permitAll()
+                        // Seguir un viaje compartido: lo abre la familia sin cuenta (token aleatorio que vence)
+                        .requestMatchers(HttpMethod.GET, "/api/publico/viajes/*").permitAll()
                         // Fotos de perfil: el nombre del archivo es un UUID imposible de adivinar (van en <img src>)
                         .requestMatchers(HttpMethod.GET, "/api/usuarios/*/foto/**").permitAll()
                         // Panel administrativo: solo personal; el permiso exacto se revisa en cada método

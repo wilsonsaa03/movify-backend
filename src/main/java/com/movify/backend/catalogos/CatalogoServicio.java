@@ -27,7 +27,12 @@ public class CatalogoServicio {
                         SELECT codigo, nombre, aplica_a, requiere_vencimiento, obligatorio_moto, obligatorio_taxi
                         FROM tipos_documento ORDER BY aplica_a, nombre
                         """),
-                "ciudad", db.queryForObject("SELECT valor FROM configuracion_sistema WHERE clave = 'ciudad_operacion'", String.class));
+                "ciudad", db.queryForObject("SELECT valor FROM configuracion_sistema WHERE clave = 'ciudad_operacion'", String.class),
+                // Para la app: "Pedir por llamada" cuando no hay internet y cuánto espera el conductor en la recogida
+                "telefono_central", db.queryForList("SELECT valor FROM configuracion_sistema WHERE clave = 'telefono_central'",
+                        String.class).stream().findFirst().orElse(""),
+                "minutos_espera_conductor", db.queryForObject("SELECT fn_config_num('minutos_espera_conductor', 5)::int",
+                        Integer.class));
     }
 
     public List<Map<String, Object>> documentosLegales() {

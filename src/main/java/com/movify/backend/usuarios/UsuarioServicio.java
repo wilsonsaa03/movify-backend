@@ -231,6 +231,10 @@ public class UsuarioServicio {
                 """, Long.class, sesion.usuarioId(), d.plataforma(), d.tokenPush(), d.modelo(), d.versionApp());
     }
 
+    public void bajaDispositivo(String tokenPush) {
+        db.update("UPDATE dispositivos SET activo = false WHERE token_push = ? AND usuario_id = ?", tokenPush, sesion.usuarioId());
+    }
+
     // ───────────── Eliminar la cuenta (Ley 1581 y Google Play) ─────────────
 
     @Transactional

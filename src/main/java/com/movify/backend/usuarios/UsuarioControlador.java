@@ -29,8 +29,12 @@ import com.movify.backend.usuarios.UsuarioDtos.DireccionRequest;
 import com.movify.backend.usuarios.UsuarioDtos.DispositivoRequest;
 import com.movify.backend.usuarios.UsuarioDtos.VerificarTelefonoRequest;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 
 /** Perfil del usuario autenticado. El id sale del token, nunca de la URL. */
 @RestController
@@ -132,6 +136,16 @@ public class UsuarioControlador {
     @PostMapping("/dispositivos")
     public Map<String, Object> registrarDispositivo(@Valid @RequestBody DispositivoRequest d) {
         return Map.of("id", usuarios.registrarDispositivo(d));
+    }
+
+    public record BajaDispositivoRequest(@NotBlank @Size(max = 300) @JsonAlias("token_push") String tokenPush) {
+    }
+
+    /** Al cerrar sesión: ese celular deja de recibir los avisos de esta cuenta. */
+    @PostMapping("/dispositivos/baja")
+    public Map<String, Object> bajaDispositivo(@Valid @RequestBody BajaDispositivoRequest d) {
+        usuarios.bajaDispositivo(d.tokenPush());
+        return Map.of("message", "Listo");
     }
 
     // ───────────── Eliminar la cuenta (Ley 1581 y Google Play) ─────────────

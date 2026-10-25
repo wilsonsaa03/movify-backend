@@ -27,11 +27,13 @@ public class TarifaControlador {
             @RequestParam(name = "tipo_servicio", defaultValue = "transporte") String tipoServicio,
             @RequestParam(name = "tipo_vehiculo", required = false) String tipoVehiculo,
             @RequestParam(name = "origen_lat") double oLat, @RequestParam(name = "origen_lng") double oLng,
-            @RequestParam(name = "destino_lat") double dLat, @RequestParam(name = "destino_lng") double dLng) {
+            @RequestParam(name = "destino_lat") double dLat, @RequestParam(name = "destino_lng") double dLng,
+            @RequestParam(name = "parada_lat", required = false) Double pLat,
+            @RequestParam(name = "parada_lng", required = false) Double pLng) {
         String tipo = EstadosServicio.tipoServicio(tipoServicio);
-        TarifaServicio.Ruta ruta = tarifas.ruta(oLat, oLng, dLat, dLng);
+        TarifaServicio.Ruta ruta = tarifas.ruta(oLat, oLng, pLat, pLng, dLat, dLng);
         List<Map<String, Object>> opciones = tarifas.opciones(tipo, tipoVehiculo, ruta);
         return Map.of("distancia_km", ruta.distanciaKm(), "duracion_min", ruta.duracionMin(), "opciones", opciones,
-                "metodo_pago", "efectivo");
+                "metodo_pago", "efectivo", "nocturno", tarifas.esNocturno());
     }
 }
