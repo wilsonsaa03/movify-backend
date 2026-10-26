@@ -52,7 +52,12 @@ public class AdminConsultaServicio {
                                (SELECT count(*) FROM conductores WHERE estado = 'pendiente') AS conductores_pendientes,
                                (SELECT count(*) FROM servicios WHERE estado IN ('buscando','asignado','en_origen','en_curso')) AS servicios_activos,
                                (SELECT count(*) FROM alertas_sos WHERE estado IN ('abierta','en_atencion')) AS sos_abiertas,
-                               (SELECT count(*) FROM tickets_soporte WHERE estado IN ('abierto','en_proceso')) AS pqrs_abiertas
+                               (SELECT count(*) FROM tickets_soporte WHERE estado IN ('abierto','en_proceso')) AS pqrs_abiertas,
+                               (SELECT count(*) FROM tickets_soporte WHERE estado IN ('abierto','en_proceso')
+                                  AND fecha_limite_respuesta < CURRENT_DATE) AS pqrs_vencidas,
+                               (SELECT count(*) FROM alertas_viaje WHERE respuesta <> 'estoy_bien' AND revisada_en IS NULL) AS alertas_viaje_pendientes,
+                               (SELECT count(*) FROM v_documentos_por_vencer) AS documentos_por_vencer,
+                               (SELECT count(*) FROM viajes_programados WHERE estado = 'pendiente') AS programados_pendientes
                         """));
     }
 
@@ -64,22 +69,18 @@ public class AdminConsultaServicio {
         return db.queryForList("SELECT clave, valor, descripcion, actualizado_en FROM configuracion_sistema ORDER BY clave");
     }
 
-    public List<Map<String, Object>> alertasSos() {
-        return db.queryForList("""
-                SELECT a.*, trim(u.nombres || ' ' || COALESCE(u.apellidos, '')) AS usuario_nombre, u.telefono
-                FROM alertas_sos a JOIN usuarios u ON u.id = a.usuario_id
-                ORDER BY (a.estado IN ('abierta','en_atencion')) DESC, a.creado_en DESC LIMIT 200
-                """);
-    }
-
-    public List<Map<String, Object>> pqrsPendientes() {
-        return db.queryForList("SELECT * FROM v_pqrs_pendientes ORDER BY vencida DESC, fecha_limite_respuesta");
-    }
-
     public Map<String, Object> auditoria() {
         return Map.of(
-                "acciones", db.queryForList("SELECT * FROM auditoria_admin ORDER BY creado_en DESC LIMIT 200"),
-                "cambios", db.queryForList("SELECT * FROM auditoria_cambios ORDER BY creado_en DESC LIMIT 200"),
+                "acciones", db.queryForList("""
+                        SELECT a.*, trim(u.nombres || ' ' || COALESCE(u.apellidos, '')) AS admin_nombre
+                        FROM auditoria_admin a LEFT JOIN usuarios u ON u.id = a.admin_id
+                        ORDER BY a.creado_en DESC LIMIT 200
+                        """),
+                "cambios", db.queryForList("""
+                        SELECT c.*, trim(u.nombres || ' ' || COALESCE(u.apellidos, '')) AS usuario_nombre
+                        FROM auditoria_cambios c LEFT JOIN usuarios u ON u.id = c.usuario_id
+                        ORDER BY c.creado_en DESC LIMIT 200
+                        """),
                 "accesos_sospechosos", db.queryForList("SELECT * FROM v_accesos_sospechosos"));
     }
 }

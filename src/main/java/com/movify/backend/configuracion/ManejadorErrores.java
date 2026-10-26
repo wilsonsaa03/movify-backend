@@ -15,7 +15,9 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
@@ -133,12 +135,22 @@ public class ManejadorErrores {
                     return cuerpo(404, m.getMessage());
                 case "42501": // bitácoras de solo inserción
                     return cuerpo(409, "Ese registro no se puede modificar.");
+                case "42703", "42P01": // columna o tabla que no existe: el código va adelante de la base
+                    log.error("La base no tiene una columna o tabla que el código usa (¿falta una migración?): {}", m.getMessage());
+                    return cuerpo(503, "El servidor se está actualizando. Intenta de nuevo en unos minutos.");
                 default:
                     break;
             }
         }
         log.error("Error de base de datos", e);
         return cuerpo(500, "Ocurrió un error interno. Intenta de nuevo.");
+    }
+
+    /** Ruta que no existe (p. ej. la web es más nueva que el backend): 404, no un "error interno". */
+    @ExceptionHandler({ NoResourceFoundException.class, HttpRequestMethodNotSupportedException.class })
+    public ResponseEntity<Map<String, Object>> rutaInexistente(Exception e) {
+        log.warn("Ruta no disponible: {}", e.getMessage());
+        return cuerpo(404, "Esta función todavía no está disponible en el servidor.");
     }
 
     @ExceptionHandler(Exception.class)

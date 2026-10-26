@@ -53,13 +53,45 @@ public final class ContenidoProhibido {
             "pistola de juguete", "pistolas de juguete", "arma de juguete", "armas de juguete", "pistola de pintura",
             "pistola para pintar", "pistola de aire para inflar", "pistola de riego");
 
+    /**
+     * Palabras que el admin agregó desde el panel (tabla palabras_prohibidas). Se suman a la lista base;
+     * las "permitidas" son excepciones legales como las de PERMITIDOS. Las carga ContenidoProhibidoCatalogo.
+     */
+    private static volatile Map<String, List<String>> extras = Map.of();
+    private static volatile List<String> permitidosExtra = List.of();
+
+    public static void actualizarExtras(Map<String, List<String>> prohibidas, List<String> permitidas) {
+        Map<String, List<String>> p = new LinkedHashMap<>();
+        prohibidas.forEach((categoria, palabras) -> p.put(categoria, palabras.stream().map(ContenidoProhibido::normalizar).toList()));
+        extras = Map.copyOf(p);
+        permitidosExtra = permitidas.stream().map(ContenidoProhibido::normalizar).toList();
+    }
+
+    /** La lista base (la del código), para mostrarla en el panel. */
+    public static Map<String, List<String>> listaBase() {
+        return Map.copyOf(LISTA);
+    }
+
+    public static List<String> permitidosBase() {
+        return PERMITIDOS;
+    }
+
+    /** Forma normal de una palabra (minúsculas, sin tildes ni signos): así se guardan las del panel. */
+    public static String forma(String palabra) {
+        return palabra == null ? "" : normalizar(palabra);
+    }
+
     /** @return la categoría encontrada ("drogas", "armas"...), o vacío si el texto está bien. */
     public static Optional<String> detectar(String texto) {
         if (texto == null || texto.isBlank()) return Optional.empty();
         String t = " " + normalizar(texto) + " ";
         for (String permitido : PERMITIDOS) t = t.replace(" " + permitido + " ", " ");
+        for (String permitido : permitidosExtra) t = t.replace(" " + permitido + " ", " ");
         String pegado = " " + t.replace(" ", "") + " "; // "m a r i h u a n a" → "marihuana"
-        for (Map.Entry<String, List<String>> e : LISTA.entrySet()) {
+        Map<String, List<String>> todas = new LinkedHashMap<>(LISTA);
+        extras.forEach((categoria, palabras) -> todas.merge(categoria, palabras,
+                (a, b) -> java.util.stream.Stream.concat(a.stream(), b.stream()).toList()));
+        for (Map.Entry<String, List<String>> e : todas.entrySet()) {
             for (String palabra : e.getValue()) {
                 if (t.contains(" " + palabra + " ")) return Optional.of(e.getKey());
                 // Letras separadas solo cuenta para palabras largas (evita falsos positivos con siglas)

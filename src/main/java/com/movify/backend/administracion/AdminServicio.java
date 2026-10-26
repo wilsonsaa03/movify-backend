@@ -13,9 +13,11 @@ import org.springframework.transaction.annotation.Transactional;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.movify.backend.comun.ActorBd;
+import com.movify.backend.comun.Celular;
 import com.movify.backend.comun.Datos;
 import com.movify.backend.comun.RecursoNoEncontradoException;
 import com.movify.backend.comun.ReglaNegocioException;
+import com.movify.backend.notificaciones.NotificacionServicio;
 import com.movify.backend.seguridad.SesionActual;
 
 /**
@@ -30,7 +32,10 @@ public class AdminServicio {
     private final ActorBd actor;
     private final ObjectMapper json = new ObjectMapper();
 
-    public AdminServicio(JdbcTemplate db, SesionActual sesion, ActorBd actor) {
+    private final NotificacionServicio avisos;
+
+    public AdminServicio(JdbcTemplate db, SesionActual sesion, ActorBd actor, NotificacionServicio avisos) {
+        this.avisos = avisos;
         this.db = db;
         this.sesion = sesion;
         this.actor = actor;
@@ -162,8 +167,15 @@ public class AdminServicio {
     @Transactional
     public Map<String, Object> cambiarEstadoUsuario(Long id, String estado, String motivo) {
         String nuevo = "inactivo".equals(estado) ? "bloqueado" : estado;
+        // Bloquear deja a la persona sin servicio: siempre con un motivo que quede escrito (y que ella pueda conocer)
+        if ("bloqueado".equals(nuevo) && (motivo == null || motivo.trim().length() < 5)) {
+            throw new ReglaNegocioException(400, "Escribe el motivo del bloqueo (al menos 5 letras)");
+        }
+        if (id.equals(sesion.usuarioId()) && "bloqueado".equals(nuevo)) {
+            throw new ReglaNegocioException(400, "No puedes bloquear tu propia cuenta");
+        }
         actor.declarar(sesion.usuarioId(), ActorBd.ADMIN);
-        String m = "bloqueado".equals(nuevo) ? (motivo == null || motivo.isBlank() ? "Bloqueado por la administración" : motivo.trim()) : null;
+        String m = "bloqueado".equals(nuevo) ? Datos.recortar(motivo.trim(), 200) : null;
         int n = db.update("UPDATE usuarios SET estado = ?, motivo_bloqueo = ? WHERE id = ? AND estado <> 'eliminado'", nuevo, m, id);
         if (n == 0) throw new RecursoNoEncontradoException("Usuario no encontrado");
         if ("bloqueado".equals(nuevo)) {
@@ -176,6 +188,15 @@ public class AdminServicio {
 
     @Transactional
     public Map<String, Object> asignarRol(Long usuarioId, String rol, boolean quitar) {
+        if (quitar && "admin".equals(rol)) {
+            // Nunca quedarse sin administradores ni quitarse uno mismo el acceso por error
+            if (usuarioId.equals(sesion.usuarioId())) {
+                throw new ReglaNegocioException(400, "No puedes quitarte tu propio rol de administrador. Pídeselo a otro admin.");
+            }
+            Integer admins = db.queryForObject("SELECT count(*) FROM usuario_roles ur JOIN usuarios u ON u.id = ur.usuario_id "
+                    + "WHERE ur.rol = 'admin' AND u.estado = 'activo'", Integer.class);
+            if (admins != null && admins <= 1) throw new ReglaNegocioException(400, "Tiene que quedar al menos un administrador activo.");
+        }
         actor.declarar(sesion.usuarioId(), ActorBd.ADMIN);
         if (quitar) {
             db.update("DELETE FROM usuario_roles WHERE usuario_id = ? AND rol = ?", usuarioId, rol);
@@ -191,26 +212,71 @@ public class AdminServicio {
     /** Las tarifas no se editan: se crea la nueva versión y se desactiva la anterior (trigger de inmutabilidad). */
     @Transactional
     public Map<String, Object> nuevaTarifa(String tipoServicio, String tipoVehiculo, BigDecimal base, BigDecimal km,
-            BigDecimal minuto, BigDecimal minima, BigDecimal recargoNocturno) {
+            BigDecimal minuto, BigDecimal minima, BigDecimal recargoNocturno, BigDecimal recargoLluvia) {
         actor.declarar(sesion.usuarioId(), ActorBd.ADMIN);
         db.update("UPDATE tarifas SET activo = false WHERE tipo_servicio = ? AND tipo_vehiculo = ? AND activo", tipoServicio, tipoVehiculo);
         Long id = db.queryForObject("""
                 INSERT INTO tarifas (tipo_servicio, tipo_vehiculo, tarifa_base, valor_km, valor_minuto, tarifa_minima,
-                                     recargo_nocturno_pct, creado_por)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
-                """, Long.class, tipoServicio, tipoVehiculo, base, km, minuto, minima, recargoNocturno, sesion.usuarioId());
+                                     recargo_nocturno_pct, recargo_lluvia_pct, creado_por)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+                """, Long.class, tipoServicio, tipoVehiculo, base, km, minuto, minima, recargoNocturno,
+                recargoLluvia == null ? BigDecimal.ZERO : recargoLluvia, sesion.usuarioId());
         auditar("tarifa_nueva", "tarifas", id, Map.of("servicio", tipoServicio, "vehiculo", tipoVehiculo));
         return Map.of("id", id, "message", "Tarifa actualizada. Los servicios ya creados conservan su tarifa.");
     }
 
     @Transactional
     public Map<String, Object> editarConfiguracion(String clave, String valor) {
+        String actual = db.queryForList("SELECT valor FROM configuracion_sistema WHERE clave = ?", String.class, clave)
+                .stream().findFirst().orElseThrow(() -> new RecursoNoEncontradoException("No existe el parámetro " + clave));
+        String nuevo = validarParametro(clave, actual, valor.trim());
         actor.declarar(sesion.usuarioId(), ActorBd.ADMIN);
-        int n = db.update("UPDATE configuracion_sistema SET valor = ? WHERE clave = ?", valor.trim(), clave);
-        if (n == 0) throw new RecursoNoEncontradoException("No existe el parámetro " + clave);
-        auditar("configuracion", "configuracion_sistema", 0L, Map.of("clave", clave, "valor", valor));
-        return Map.of("message", "Parámetro actualizado");
+        db.update("UPDATE configuracion_sistema SET valor = ? WHERE clave = ?", nuevo, clave);
+        auditar("configuracion", "configuracion_sistema", 0L, Map.of("clave", clave, "antes", actual, "valor", nuevo));
+        return Map.of("message", "Parámetro actualizado", "valor", nuevo);
     }
+
+    /**
+     * La base lee los parámetros numéricos con fn_config_num (valor::numeric): un texto ahí rompería la búsqueda
+     * de conductores, las tarifas y los tiempos. Por eso un parámetro que hoy es número solo acepta números.
+     */
+    static String validarParametro(String clave, String actual, String valor) {
+        if ("telefono_central".equals(clave)) {
+            if (valor.isEmpty()) return "";
+            String tel = Celular.normalizarContacto(valor);
+            if (tel == null) throw new ReglaNegocioException(400, "Escribe un celular (3XX XXX XXXX) o un fijo (60X XXX XXXX)");
+            return tel;
+        }
+        if (!actual.matches("-?\\d+(\\.\\d+)?")) {
+            if (valor.isEmpty()) throw new ReglaNegocioException(400, "El valor no puede quedar vacío");
+            return valor;
+        }
+        BigDecimal n;
+        try {
+            n = new BigDecimal(valor.replace(',', '.'));
+        } catch (NumberFormatException e) {
+            throw new ReglaNegocioException(400, "Este parámetro es un número. Escribe solo dígitos (por ejemplo 5 o 2.5)");
+        }
+        if (clave.startsWith("hora_") && (n.compareTo(BigDecimal.ZERO) < 0 || n.compareTo(new BigDecimal("23")) > 0
+                || n.stripTrailingZeros().scale() > 0)) {
+            throw new ReglaNegocioException(400, "La hora va de 0 a 23 (hora de Colombia)");
+        }
+        if (clave.startsWith("cobertura_l")) return n.toPlainString(); // latitud / longitud: pueden ser negativas
+        if (clave.endsWith("_activa") && n.compareTo(BigDecimal.ZERO) != 0 && n.compareTo(BigDecimal.ONE) != 0) {
+            throw new ReglaNegocioException(400, "Este interruptor solo acepta 1 (prendido) o 0 (apagado)");
+        }
+        if (n.signum() < 0) throw new ReglaNegocioException(400, "El valor no puede ser negativo");
+        if (n.signum() == 0 && NO_CERO.contains(clave)) {
+            throw new ReglaNegocioException(400, "Este parámetro no puede ser 0: dejaría de funcionar esa parte de MoviFY");
+        }
+        return n.stripTrailingZeros().toPlainString();
+    }
+
+    /** Parámetros que en 0 apagarían la operación (nadie recibiría pedidos, nadie podría entrar…). */
+    private static final Set<String> NO_CERO = Set.of("radio_busqueda_km", "tiempo_busqueda_seg", "ubicacion_vigencia_seg",
+            "cobertura_radio_km", "otp_vigencia_seg", "otp_max_intentos", "otp_max_envios_hora", "max_intentos_fallidos",
+            "minutos_ventana_intentos", "horas_vida_access_token", "dias_vida_refresh_token", "tope_compra_domicilio",
+            "peso_max_moto_kg", "horas_enlace_compartido", "max_dias_programar", "dias_para_calificar");
 
     // ───────────── SOS y PQRS ─────────────
 
@@ -237,6 +303,13 @@ public class AdminServicio {
                 """, Datos.vacioANull(estado), Datos.vacioANull(respuesta), Datos.vacioANull(prioridad), sesion.usuarioId(), id);
         if (n == 0) throw new RecursoNoEncontradoException("PQRS no encontrada");
         auditar("pqrs_" + Datos.nvl(estado), "tickets_soporte", id, Map.of());
+        // Con respuesta, a la persona le llega el aviso en el celular ("Ayuda" en la app muestra la respuesta)
+        if (Datos.vacioANull(respuesta) != null) {
+            Map<String, Object> t = db.queryForMap("SELECT usuario_id, servicio_id, asunto FROM tickets_soporte WHERE id = ?", id);
+            avisos.avisar(Datos.aLong(t.get("usuario_id")), Datos.aLong(t.get("servicio_id")), NotificacionServicio.SOPORTE,
+                    "soporte", "Soporte de MoviFY te respondió", "Sobre «" + Datos.recortar(String.valueOf(t.get("asunto")), 60)
+                            + "». Ábrela en Ayuda.");
+        }
         return Map.of("message", "PQRS actualizada");
     }
 

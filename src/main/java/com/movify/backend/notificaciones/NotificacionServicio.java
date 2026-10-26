@@ -31,6 +31,7 @@ public class NotificacionServicio {
     public static final String ESTADO = "estado_servicio";
     public static final String SOLICITUD = "nueva_solicitud";
     public static final String MENSAJE = "mensaje";
+    public static final String SOPORTE = "soporte";
 
     private static final Logger log = LoggerFactory.getLogger(NotificacionServicio.class);
 

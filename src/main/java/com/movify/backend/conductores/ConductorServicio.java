@@ -196,17 +196,98 @@ public class ConductorServicio {
                 SELECT c.usuario_id AS conductor_id, c.tipo_identificacion, c.numero_identificacion, c.fecha_nacimiento,
                        array_to_string(c.categorias_licencia, ',') AS categorias_licencia, c.estado, e.nombre AS estado_nombre,
                        e.color AS estado_color, c.motivo_estado, c.disponible, c.calificacion_promedio,
-                       c.total_calificaciones, c.total_servicios, c.total_cancelaciones, c.verificado_en, c.creado_en
+                       c.total_calificaciones, c.total_servicios, c.total_cancelaciones, c.verificado_en, c.creado_en,
+                       c.sobre_mi
                 FROM conductores c JOIN estados e ON e.ambito = 'conductor' AND e.codigo = c.estado
                 WHERE c.usuario_id = ?
                 """, usuarioId);
         if (filas.isEmpty()) throw new RecursoNoEncontradoException("Todavía no tienes perfil de conductor");
         Map<String, Object> r = new HashMap<>(filas.get(0));
         r.put("categorias_licencia", List.of(String.valueOf(r.get("categorias_licencia")).split(",")));
-        r.put("vehiculo", vehiculoActivo(usuarioId));
+        Map<String, Object> vehiculo = vehiculoActivo(usuarioId);
+        r.put("vehiculo", vehiculo);
+        // Lo que puede recibir según su vehículo (tabla servicio_vehiculo_permitido, la misma que usa la asignación)
+        r.put("servicios_autorizados", vehiculo == null ? List.of() : db.queryForList("""
+                SELECT ts.codigo, ts.nombre, ts.descripcion
+                FROM servicio_vehiculo_permitido p JOIN tipos_servicio ts ON ts.codigo = p.tipo_servicio
+                WHERE p.tipo_vehiculo = ?
+                ORDER BY CASE ts.codigo WHEN 'transporte' THEN 1 WHEN 'domicilio' THEN 2 ELSE 3 END
+                """, vehiculo.get("tipo_vehiculo")));
         r.put("documentos", documentos(usuarioId));
         r.put("documentos_faltantes", faltantes(usuarioId));
         return r;
+    }
+
+    /**
+     * "Tu desempeño" del perfil del conductor (como Uber/DiDi): estrellas por puntaje, los últimos comentarios
+     * (sin el nombre del pasajero), la tasa de cancelación contra el límite de la sanción (más de 20 % con al menos
+     * 5 cierres, ver ViajeServicio.tasaSancion) y cuántos pasajeros lo tienen de favorito.
+     */
+    public Map<String, Object> miDesempeno(Long usuarioId) {
+        List<Map<String, Object>> filas = db.queryForList("""
+                SELECT c.calificacion_promedio, c.total_calificaciones, c.total_servicios, c.total_cancelaciones,
+                       COALESCE(c.verificado_en, c.creado_en) AS conductor_desde,
+                       (SELECT count(*) FROM conductores_favoritos f WHERE f.conductor_id = c.usuario_id) AS favoritos
+                FROM conductores c WHERE c.usuario_id = ?
+                """, usuarioId);
+        if (filas.isEmpty()) throw new RecursoNoEncontradoException("Todavía no tienes perfil de conductor");
+        Map<String, Object> c = filas.get(0);
+
+        Map<String, Object> estrellas = new HashMap<>();
+        for (int i = 1; i <= 5; i++) estrellas.put(String.valueOf(i), 0L);
+        db.queryForList("SELECT puntuacion, count(*) AS n FROM calificaciones WHERE calificado_id = ? GROUP BY puntuacion", usuarioId)
+                .forEach(f -> estrellas.put(String.valueOf(f.get("puntuacion")), ((Number) f.get("n")).longValue()));
+
+        List<Map<String, Object>> comentarios = db.queryForList("""
+                SELECT ca.puntuacion, ca.comentario, ca.creado_en, s.tipo_servicio
+                FROM calificaciones ca JOIN servicios s ON s.id = ca.servicio_id
+                WHERE ca.calificado_id = ? AND NULLIF(btrim(ca.comentario), '') IS NOT NULL
+                ORDER BY ca.creado_en DESC
+                LIMIT 10
+                """, usuarioId);
+
+        long finalizados = ((Number) c.get("total_servicios")).longValue();
+        long cancelados = ((Number) c.get("total_cancelaciones")).longValue();
+        long cerrados = finalizados + cancelados;
+        double tasa = cerrados == 0 ? 0 : Math.round(cancelados * 1000.0 / cerrados) / 10.0;
+
+        Map<String, Object> r = new HashMap<>();
+        r.put("calificacion_promedio", c.get("calificacion_promedio"));
+        r.put("total_calificaciones", c.get("total_calificaciones"));
+        r.put("estrellas", estrellas);
+        r.put("comentarios", comentarios);
+        r.put("total_servicios", finalizados);
+        r.put("total_cancelaciones", cancelados);
+        r.put("tasa_cancelacion", tasa);
+        r.put("limite_cancelacion", 20.0);
+        r.put("minimo_cierres", 5);
+        r.put("sancionado", cerrados >= 5 && tasa > 20.0);
+        r.put("favoritos", ((Number) c.get("favoritos")).longValue());
+        // Elogios de los pasajeros ("Muy amable" ×12), de más a menos
+        r.put("elogios", db.queryForList("""
+                SELECT e AS elogio, count(*) AS veces
+                FROM calificaciones ca, unnest(ca.elogios) AS e
+                WHERE ca.calificado_id = ?
+                GROUP BY e ORDER BY veces DESC, e
+                """, usuarioId));
+        r.put("conductor_desde", c.get("conductor_desde"));
+        return r;
+    }
+
+    /**
+     * "Sobre mí" (máx. 160 letras). No se permiten teléfonos, correos ni enlaces: el contacto con el pasajero va por
+     * el chat del viaje. Vacío = lo borra.
+     */
+    public Map<String, Object> guardarSobreMi(Long usuarioId, String texto) {
+        String t = texto == null ? "" : texto.strip().replaceAll("\\s+", " ");
+        if (t.length() > 160) throw new ReglaNegocioException(400, "Escribe máximo 160 letras.");
+        String sinEspacios = t.replaceAll("[\\s.\\-()]", "");
+        if (sinEspacios.matches(".*\\d{7,}.*") || t.contains("@") || t.toLowerCase().matches(".*(https?://|www\\.|\\.com|\\.co\\b).*")) {
+            throw new ReglaNegocioException(400, "No pongas teléfonos, correos ni enlaces. Tus pasajeros te escriben por el chat del viaje.");
+        }
+        actor.declarar(usuarioId, ActorBd.CONDUCTOR);
+        db.update("UPDATE conductores SET sobre_mi = ? WHERE usuario_id = ?", t.isEmpty() ? null : t, usuarioId);
+        return Map.of("sobre_mi", t, "message", t.isEmpty() ? "Quitamos tu presentación." : "¡Listo! Tus pasajeros verán tu presentación.");
     }
 
     /**

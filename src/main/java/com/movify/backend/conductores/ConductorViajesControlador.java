@@ -81,6 +81,13 @@ public class ConductorViajesControlador {
         return estadisticas.ganancias(conductorId);
     }
 
+    /** Pantalla "Ganancias" de la app: periodo = hoy | semana | mes (el mes en curso). */
+    @GetMapping("/ganancias-resumen/{conductorId}")
+    public Map<String, Object> gananciasResumen(@PathVariable Long conductorId, @RequestParam(defaultValue = "hoy") String periodo) {
+        sesion.exigirConductor(conductorId);
+        return estadisticas.resumenGanancias(conductorId, periodo);
+    }
+
     @GetMapping("/transacciones-conductor/{conductorId}")
     public List<Map<String, Object>> transacciones(@PathVariable Long conductorId,
             @RequestParam(defaultValue = "mes") String filtro,

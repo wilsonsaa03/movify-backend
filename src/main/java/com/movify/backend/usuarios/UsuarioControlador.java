@@ -131,6 +131,19 @@ public class UsuarioControlador {
         return Map.of("message", "Contacto eliminado");
     }
 
+    // ───────────── Personas desvinculadas (no volver a emparejar) ─────────────
+
+    @GetMapping("/bloqueados")
+    public List<Map<String, Object>> bloqueados() {
+        return usuarios.bloqueados();
+    }
+
+    @DeleteMapping("/bloqueados/{id}")
+    public Map<String, Object> desbloquear(@PathVariable Long id) {
+        usuarios.desbloquear(id);
+        return Map.of("message", "Listo. Pueden volver a emparejarlos.");
+    }
+
     // ───────────── Dispositivo (notificaciones push) ─────────────
 
     @PostMapping("/dispositivos")

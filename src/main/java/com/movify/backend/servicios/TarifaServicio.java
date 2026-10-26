@@ -89,6 +89,17 @@ public class TarifaServicio {
                 """, Boolean.class));
     }
 
+    /** ¿El admin prendió el recargo por lluvia? (configuracion_sistema.lluvia_activa) */
+    public boolean hayLluvia() {
+        return Boolean.TRUE.equals(db.queryForObject("SELECT fn_config_num('lluvia_activa', 0) = 1", Boolean.class));
+    }
+
+    public BigDecimal recargoLluviaPct(String tipoServicio, String tipoVehiculo) {
+        return db.queryForList("""
+                SELECT recargo_lluvia_pct FROM tarifas WHERE tipo_servicio = ? AND tipo_vehiculo = ? AND activo
+                """, BigDecimal.class, tipoServicio, tipoVehiculo).stream().findFirst().orElse(BigDecimal.ZERO);
+    }
+
     /** % de recargo nocturno de la tarifa activa (0 si no tiene). */
     public BigDecimal recargoNocturnoPct(String tipoServicio, String tipoVehiculo) {
         return db.queryForList("""
@@ -118,13 +129,15 @@ public class TarifaServicio {
                 """, String.class, tipoServicio, tipoVehiculo, tipoVehiculo);
         List<Map<String, Object>> r = new ArrayList<>();
         boolean nocturno = esNocturno();
+        boolean lluvia = hayLluvia();
         for (String v : vehiculos) {
             BigDecimal valor = cotizar(tipoServicio, v, ruta);
-            // "Incluye recargo nocturno del 15 %": la app explica por qué de noche cuesta más
+            // "Incluye recargo nocturno del 15 %" / "por lluvia": la app explica por qué cuesta más
             BigDecimal recargo = nocturno ? recargoNocturnoPct(tipoServicio, v) : BigDecimal.ZERO;
+            BigDecimal recargoLluvia = lluvia ? recargoLluviaPct(tipoServicio, v) : BigDecimal.ZERO;
             r.add(Map.of("tipo_servicio", tipoServicio, "tipo_vehiculo", v, "valor_estimado", valor,
                     "distancia_km", ruta.distanciaKm(), "duracion_min", ruta.duracionMin(),
-                    "recargo_nocturno_pct", recargo, "valor_maximo", maximoOfrecible(valor)));
+                    "recargo_nocturno_pct", recargo, "recargo_lluvia_pct", recargoLluvia, "valor_maximo", maximoOfrecible(valor)));
         }
         return r;
     }

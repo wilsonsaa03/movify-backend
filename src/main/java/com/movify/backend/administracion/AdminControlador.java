@@ -39,8 +39,11 @@ public class AdminControlador {
     private final AdminServicio admin;
     private final AdminConsultaServicio consultas;
     private final ViajeServicio viajes;
+    private final AdminOperacionServicio operacion;
 
-    public AdminControlador(AdminServicio admin, AdminConsultaServicio consultas, ViajeServicio viajes) {
+    public AdminControlador(AdminServicio admin, AdminConsultaServicio consultas, ViajeServicio viajes,
+            AdminOperacionServicio operacion) {
+        this.operacion = operacion;
         this.admin = admin;
         this.consultas = consultas;
         this.viajes = viajes;
@@ -65,7 +68,8 @@ public class AdminControlador {
             @NotNull @DecimalMin("0") @JsonAlias("valor_km") BigDecimal valorKm,
             @NotNull @DecimalMin("0") @JsonAlias("valor_minuto") BigDecimal valorMinuto,
             @NotNull @DecimalMin("0") @JsonAlias("tarifa_minima") BigDecimal tarifaMinima,
-            @NotNull @DecimalMin("0") @DecimalMax("100") @JsonAlias("recargo_nocturno_pct") BigDecimal recargoNocturnoPct) {
+            @NotNull @DecimalMin("0") @DecimalMax("100") @JsonAlias("recargo_nocturno_pct") BigDecimal recargoNocturnoPct,
+            @DecimalMin("0") @DecimalMax("100") @JsonAlias("recargo_lluvia_pct") BigDecimal recargoLluviaPct) {
     }
 
     public record ValorRequest(@NotBlank @Size(max = 200) String valor) {
@@ -154,8 +158,11 @@ public class AdminControlador {
     @PreAuthorize("hasAuthority('admin_servicios.cancelar')")
     public Map<String, Object> cancelarServicio(@PathVariable Long id, @RequestBody(required = false) Map<String, Object> body) {
         Short motivo = body != null && body.get("motivo_id") instanceof Number n ? n.shortValue() : null;
-        String detalle = body == null ? null : (String) body.get("motivo");
-        return viajes.cambiarEstado(id, new CambioEstadoRequest("cancelado", detalle, motivo, null, null, null, null));
+        // Nunca con un clic: el motivo escrito queda en el servicio y en la auditoría
+        String detalle = AdminPanelServicio.exigirMotivo(body == null ? null : (String) body.get("motivo"));
+        Map<String, Object> r = viajes.cambiarEstado(id, new CambioEstadoRequest("cancelado", detalle, motivo, null, null, null, null));
+        admin.auditar("servicio_cancelado", "servicios", id, Map.of("motivo_id", motivo == null ? "" : motivo, "motivo", detalle));
+        return r;
     }
 
     @GetMapping("/api/admin/resumen")
@@ -174,7 +181,7 @@ public class AdminControlador {
     @PreAuthorize("hasAuthority('tarifas.gestionar')")
     public Map<String, Object> nuevaTarifa(@Valid @RequestBody TarifaRequest t) {
         return admin.nuevaTarifa(t.tipoServicio(), t.tipoVehiculo(), t.tarifaBase(), t.valorKm(), t.valorMinuto(),
-                t.tarifaMinima(), t.recargoNocturnoPct());
+                t.tarifaMinima(), t.recargoNocturnoPct(), t.recargoLluviaPct());
     }
 
     @GetMapping("/api/admin/configuracion")
@@ -192,7 +199,7 @@ public class AdminControlador {
     @GetMapping("/api/admin/sos")
     @PreAuthorize("hasAuthority('admin_sos.ver')")
     public List<Map<String, Object>> sos() {
-        return consultas.alertasSos();
+        return operacion.sos();
     }
 
     @PatchMapping("/api/admin/sos/{id}")
@@ -203,8 +210,8 @@ public class AdminControlador {
 
     @GetMapping("/api/admin/pqrs")
     @PreAuthorize("hasAuthority('admin_pqrs.ver')")
-    public List<Map<String, Object>> pqrs() {
-        return consultas.pqrsPendientes();
+    public List<Map<String, Object>> pqrs(@RequestParam(defaultValue = "abiertos") String filtro) {
+        return operacion.pqrs(filtro);
     }
 
     @PatchMapping("/api/admin/pqrs/{id}")

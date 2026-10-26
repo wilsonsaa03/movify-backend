@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,7 +52,7 @@ public class ViajeServicio {
 
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final List<String> CATEGORIAS_DOMICILIO = List.of("comida", "farmacia", "mercado", "diligencia");
-    /** Lo máximo que el domiciliario adelanta de su bolsillo por un pedido (propuesta; ajustar con el negocio). */
+    /** Si la base no tiene el parámetro tope_compra_domicilio (se cambia desde el panel). */
     static final BigDecimal TOPE_COMPRA_DOMICILIO = new BigDecimal("500000");
     private static final BigDecimal CIEN = new BigDecimal("100");
 
@@ -169,7 +170,7 @@ public class ViajeServicio {
      * Si el pasajero pidió casco, solo a motos que lo llevan. A cada uno le llega un push.
      * @return cuántos conductores nuevos lo recibieron.
      */
-    int ofertar(Long servicioId) {
+    public int ofertar(Long servicioId) {
         Map<String, Object> s = db.queryForMap("""
                 SELECT tipo_servicio, tipo_vehiculo, cliente_id, origen_lat, origen_lng, necesita_casco, valor_estimado
                 FROM servicios WHERE id = ?
@@ -286,9 +287,11 @@ public class ViajeServicio {
             throw new ReglaNegocioException(400, "Indica cuánto cuestan más o menos los productos");
         }
         // El domiciliario pone la plata de su bolsillo: un tope evita pedidos que nadie podría pagar
-        if (compra && valor.compareTo(TOPE_COMPRA_DOMICILIO) > 0) {
+        BigDecimal tope = db.queryForObject("SELECT fn_config_num('tope_compra_domicilio', ?)", BigDecimal.class,
+                TOPE_COMPRA_DOMICILIO);
+        if (compra && valor.compareTo(tope) > 0) {
             throw new ReglaNegocioException(400, "Por ahora el domiciliario puede pagar pedidos de hasta $"
-                    + String.format(Locale.ROOT, "%,d", TOPE_COMPRA_DOMICILIO.longValue()).replace(',', '.')
+                    + String.format(Locale.ROOT, "%,d", tope.longValue()).replace(',', '.')
                     + ". Si ya está pago, elige \"Ya está pago\".");
         }
         String categoria = categoriaDomicilio(s.categoria());
@@ -377,6 +380,11 @@ public class ViajeServicio {
                            trim(u.nombres || ' ' || COALESCE(u.apellidos, '')) AS conductor_nombre,
                            u.foto_url AS conductor_foto, u.telefono AS conductor_telefono,
                            c.calificacion_promedio AS conductor_calificacion,
+                           c.sobre_mi AS conductor_sobre_mi, (c.estado = 'aprobado') AS conductor_verificado,
+                           (SELECT array_to_string(array_agg(t.e ORDER BY t.n DESC, t.e), '|')
+                              FROM (SELECT e, count(*) AS n FROM calificaciones ca, unnest(ca.elogios) AS e
+                                     WHERE ca.calificado_id = c.usuario_id GROUP BY e ORDER BY n DESC, e LIMIT 3) t)
+                               AS conductor_elogios,
                            v.placa AS conductor_placa, trim(v.marca || ' ' || COALESCE(v.linea, '')) AS conductor_modelo,
                            v.color AS conductor_color, v.tipo_vehiculo AS conductor_vehiculo,
                            v.casco_pasajero AS conductor_casco, c.total_servicios AS conductor_viajes,
@@ -572,6 +580,11 @@ public class ViajeServicio {
                             "Tu servicio fue cancelado", ActorBd.CONDUCTOR.equals(quien)
                                     ? "El conductor canceló. Puedes pedir otro cuando quieras."
                                     : "Soporte de MoviFY canceló el servicio.");
+                    // Lo canceló el personal: el conductor asignado también tiene que enterarse
+                    if (!ActorBd.CONDUCTOR.equals(quien) && conductor != null) {
+                        avisos.avisar(conductor, servicioId, NotificacionServicio.ESTADO, "cancelado",
+                                "Soporte canceló el servicio", "Ya puedes recibir otras solicitudes.");
+                    }
                 }
                 return respuesta(servicioId, tipo, CANCELADO, "Servicio cancelado.");
             }
@@ -729,8 +742,22 @@ public class ViajeServicio {
 
     // ═════════════════════════════ Calificación ═════════════════════════════
 
-    @Transactional
+    /**
+     * Elogios que se pueden dar al calificar (lista cerrada: lo que se muestra en el perfil no puede ser texto libre).
+     * Al conductor: Manejó con cuidado, Muy amable, Llegó rápido, Conoce la zona, Me prestó casco, Carro limpio.
+     * Al pasajero: Buena conducta, Muy amable, Dio indicaciones precisas, Pagó completo, Conoce la zona.
+     */
+    static final Set<String> ELOGIOS_AL_CONDUCTOR = Set.of("Manejó con cuidado", "Muy amable", "Llegó rápido",
+            "Conoce la zona", "Me prestó casco", "Carro limpio");
+    static final Set<String> ELOGIOS_AL_PASAJERO = Set.of("Buena conducta", "Muy amable", "Dio indicaciones precisas",
+            "Pagó completo", "Conoce la zona");
+
     public void calificar(Long servicioId, int puntos, String comentario) {
+        calificar(servicioId, puntos, comentario, List.of());
+    }
+
+    @Transactional
+    public void calificar(Long servicioId, int puntos, String comentario, List<String> elogios) {
         Long yo = sesion.usuarioId();
         Map<String, Object> s = db.queryForList("SELECT cliente_id, conductor_id FROM servicios WHERE id = ?", servicioId)
                 .stream().findFirst().orElseThrow(() -> new RecursoNoEncontradoException("Servicio no encontrado"));
@@ -741,11 +768,14 @@ public class ViajeServicio {
         else if (Objects.equals(conductor, yo)) calificado = cliente;
         else throw new AccesoDenegadoException("Solo puedes calificar tus propios servicios");
         if (calificado == null) throw new ReglaNegocioException("Este servicio no tuvo conductor");
+        Set<String> permitidos = Objects.equals(cliente, yo) ? ELOGIOS_AL_CONDUCTOR : ELOGIOS_AL_PASAJERO;
+        List<String> lista = elogios == null ? List.of() : elogios.stream().filter(Objects::nonNull).map(String::trim).distinct().toList();
+        if (!permitidos.containsAll(lista)) throw new ReglaNegocioException(400, "Ese elogio no está en la lista");
         // El trigger revisa que esté finalizado y dentro del plazo, y actualiza el promedio
         db.update("""
-                INSERT INTO calificaciones (servicio_id, calificador_id, calificado_id, puntuacion, comentario)
-                VALUES (?, ?, ?, ?, ?)
-                """, servicioId, yo, calificado, puntos, Datos.vacioANull(comentario));
+                INSERT INTO calificaciones (servicio_id, calificador_id, calificado_id, puntuacion, comentario, elogios)
+                VALUES (?, ?, ?, ?, ?, CASE WHEN ? = '' THEN '{}'::varchar[] ELSE string_to_array(?, '|')::varchar[] END)
+                """, servicioId, yo, calificado, puntos, Datos.vacioANull(comentario), String.join("|", lista), String.join("|", lista));
     }
 
     // ═════════════════════════════ Utilidades ═════════════════════════════

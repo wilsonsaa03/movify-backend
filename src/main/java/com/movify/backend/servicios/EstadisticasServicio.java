@@ -76,6 +76,83 @@ public class EstadisticasServicio {
         return r;
     }
 
+    /**
+     * Pantalla "Ganancias" de la app: lo cobrado en el periodo (hoy, semana o mes en curso), las barras completas
+     * (bloques de 3 horas, días de la semana o días del mes, también los que van en cero), el desglose por tipo y
+     * la comparación con el periodo anterior HASTA LA MISMA HORA (hoy a las 3 p. m. contra ayer a las 3 p. m.).
+     */
+    public Map<String, Object> resumenGanancias(Long conductorId, String periodo) {
+        // inicio, paso y largo salen de constantes, nunca del texto del usuario
+        String p = switch (periodo) {
+            case "semana", "mes" -> periodo;
+            default -> "hoy";
+        };
+        String inicio = switch (p) {
+            case "semana" -> "date_trunc('week', now() AT TIME ZONE 'America/Bogota')";
+            case "mes" -> "date_trunc('month', now() AT TIME ZONE 'America/Bogota')";
+            default -> "date_trunc('day', now() AT TIME ZONE 'America/Bogota')";
+        };
+        String largo = switch (p) {
+            case "semana" -> "INTERVAL '7 days'";
+            case "mes" -> "INTERVAL '1 month'";
+            default -> "INTERVAL '1 day'";
+        };
+        String paso = "hoy".equals(p) ? "INTERVAL '3 hours'" : "INTERVAL '1 day'";
+        String local = "(s.finalizado_en AT TIME ZONE 'America/Bogota')";
+
+        Map<String, Object> t = db.queryForMap("""
+                SELECT COALESCE(SUM(s.valor_final) FILTER (WHERE %1$s >= %2$s), 0)                    AS total,
+                       COUNT(*) FILTER (WHERE %1$s >= %2$s)                                            AS viajes,
+                       COALESCE(SUM(s.distancia_km) FILTER (WHERE %1$s >= %2$s), 0)                    AS km,
+                       COALESCE(SUM(s.duracion_estimada_min) FILTER (WHERE %1$s >= %2$s), 0)           AS minutos,
+                       COALESCE(SUM(s.valor_final) FILTER (WHERE %1$s >= %2$s - %3$s
+                                                             AND %1$s <  (now() AT TIME ZONE 'America/Bogota') - %3$s), 0) AS anterior
+                FROM servicios s
+                WHERE s.conductor_id = ? AND s.estado = 'finalizado'
+                  AND %1$s >= %2$s - %3$s
+                """.formatted(local, inicio, largo), conductorId);
+
+        List<Map<String, Object>> barras = db.queryForList("""
+                SELECT TO_CHAR(b.desde, 'YYYY-MM-DD"T"HH24:MI') AS desde,
+                       COALESCE(SUM(s.valor_final), 0) AS valor,
+                       COUNT(s.id) AS viajes
+                FROM generate_series(%1$s, %1$s + %2$s - %3$s, %3$s) AS b(desde)
+                LEFT JOIN servicios s
+                       ON s.conductor_id = ? AND s.estado = 'finalizado'
+                      AND %4$s >= b.desde AND %4$s < b.desde + %3$s
+                GROUP BY b.desde
+                ORDER BY b.desde
+                """.formatted(inicio, largo, paso, local), conductorId);
+
+        List<Map<String, Object>> porTipo = db.queryForList("""
+                SELECT CASE WHEN s.tipo_servicio = 'transporte' THEN COALESCE(s.tipo_vehiculo, 'taxi')
+                            ELSE s.tipo_servicio END AS tipo,
+                       COALESCE(SUM(s.valor_final), 0) AS valor,
+                       COUNT(*) AS viajes
+                FROM servicios s
+                WHERE s.conductor_id = ? AND s.estado = 'finalizado' AND %1$s >= %2$s
+                GROUP BY 1
+                ORDER BY 2 DESC
+                """.formatted(local, inicio), conductorId);
+
+        double total = Datos.num(t.get("total"));
+        long viajes = ((Number) t.get("viajes")).longValue();
+        double anterior = Datos.num(t.get("anterior"));
+        Map<String, Object> r = new HashMap<>();
+        r.put("periodo", p);
+        r.put("total", total);
+        r.put("viajes", viajes);
+        r.put("km", Math.round(Datos.num(t.get("km")) * 10) / 10.0);
+        r.put("minutos", ((Number) t.get("minutos")).longValue());
+        r.put("promedio", viajes > 0 ? Math.round(total / viajes) : 0);
+        r.put("anterior", anterior);
+        // null = no hay con qué comparar (el periodo anterior va en cero)
+        r.put("tendencia", anterior > 0 ? tendencia(total, anterior) : null);
+        r.put("barras", barras);
+        r.put("por_tipo", porTipo);
+        return r;
+    }
+
     public List<Map<String, Object>> transacciones(Long conductorId, String filtro, int page, int size) {
         int tamano = Math.min(Math.max(size, 1), 50);
         LocalDate desde = desde(filtro);
@@ -149,7 +226,9 @@ public class EstadisticasServicio {
         };
         String patron = busqueda == null || busqueda.isBlank() ? null
                 : "%" + busqueda.trim().toLowerCase().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
+        // Empieza con salto de línea: sin él, "hoy" (que termina en ::date) quedaba pegado como "::dateAND" → error SQL
         String condBusqueda = """
+
                 AND (CAST(? AS text) IS NULL
                      OR lower(v.origen) LIKE CAST(? AS text)
                      OR lower(v.destino) LIKE CAST(? AS text)

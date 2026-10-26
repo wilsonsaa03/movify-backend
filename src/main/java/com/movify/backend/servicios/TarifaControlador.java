@@ -34,6 +34,7 @@ public class TarifaControlador {
         TarifaServicio.Ruta ruta = tarifas.ruta(oLat, oLng, pLat, pLng, dLat, dLng);
         List<Map<String, Object>> opciones = tarifas.opciones(tipo, tipoVehiculo, ruta);
         return Map.of("distancia_km", ruta.distanciaKm(), "duracion_min", ruta.duracionMin(), "opciones", opciones,
-                "metodo_pago", "efectivo", "nocturno", tarifas.esNocturno());
+                "metodo_pago", "efectivo", "nocturno", tarifas.esNocturno(),
+                "lluvia", tarifas.hayLluvia());
     }
 }

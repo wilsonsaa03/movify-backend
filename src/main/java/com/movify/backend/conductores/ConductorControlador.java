@@ -120,6 +120,21 @@ public class ConductorControlador {
         return conductores.miPerfil(sesion.usuarioId());
     }
 
+    /** Estrellas, comentarios, tasa de cancelación y favoritos (perfil de la app). Solo conductores. */
+    @GetMapping("/mi-desempeno")
+    public Map<String, Object> miDesempeno() {
+        return conductores.miDesempeno(sesion.conductorId());
+    }
+
+    public record SobreMiRequest(@jakarta.validation.constraints.Size(max = 400) String texto) {
+    }
+
+    /** "Sobre mí" del conductor (lo ve el pasajero asignado). */
+    @PutMapping("/sobre-mi")
+    public Map<String, Object> sobreMi(@Valid @RequestBody SobreMiRequest req) {
+        return conductores.guardarSobreMi(sesion.conductorId(), req.texto());
+    }
+
     @GetMapping("/vehiculos")
     public Map<String, Object> vehiculo() {
         Map<String, Object> v = conductores.vehiculoActivo(perfilPropio());

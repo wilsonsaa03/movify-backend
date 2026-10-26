@@ -213,6 +213,26 @@ public class UsuarioServicio {
                 """, Long.class, sesion.usuarioId(), c.nombre().trim(), tel, c.parentesco());
     }
 
+    /**
+     * Personas que desvinculé (no me vuelven a emparejar). Solo el nombre de pila y la inicial del apellido:
+     * nada de teléfono ni foto.
+     */
+    public List<Map<String, Object>> bloqueados() {
+        return db.queryForList("""
+                SELECT b.bloqueado_id AS id,
+                       trim(split_part(u.nombres, ' ', 1) || ' ' || COALESCE(left(u.apellidos, 1) || '.', '')) AS nombre,
+                       b.motivo, b.creado_en
+                FROM usuarios_bloqueados b JOIN usuarios u ON u.id = b.bloqueado_id
+                WHERE b.usuario_id = ?
+                ORDER BY b.creado_en DESC
+                """, sesion.usuarioId());
+    }
+
+    public void desbloquear(Long bloqueadoId) {
+        int n = db.update("DELETE FROM usuarios_bloqueados WHERE usuario_id = ? AND bloqueado_id = ?", sesion.usuarioId(), bloqueadoId);
+        if (n == 0) throw new RecursoNoEncontradoException("No lo tenías desvinculado");
+    }
+
     public void borrarContacto(Long id) {
         int n = db.update("DELETE FROM contactos_emergencia WHERE id = ? AND usuario_id = ?", id, sesion.usuarioId());
         if (n == 0) throw new RecursoNoEncontradoException("Contacto no encontrado");

@@ -316,6 +316,14 @@ class FlujoCompletoTest {
         assertThat(((Number) stats.get("ganancias_hoy")).doubleValue()).isPositive();
         Map<String, Object> hist = ok(get("/api/transporte/historial-conductor/" + idConductor), tokenConductor, null);
         assertThat(((Number) hist.get("total")).intValue()).isEqualTo(1);
+        // Los filtros de "Mis viajes" de la app (antes "hoy" daba 500 por el SQL mal unido)
+        for (String filtro : List.of("hoy", "semana", "mes")) {
+            Map<String, Object> f = ok(get("/api/transporte/historial-conductor/" + idConductor + "?filtro=" + filtro + "&limite=50"),
+                    tokenConductor, null);
+            assertThat(((Number) f.get("total")).intValue()).as(filtro).isEqualTo(1);
+        }
+        assertThat(((Number) ok(get("/api/transporte/historial-conductor/" + idConductor + "?filtro=hoy&busqueda=zzz"),
+                tokenConductor, null).get("total")).intValue()).isZero();
         assertThat(lista(get("/api/transporte/servicios/usuario/" + idCliente), tokenCliente)).hasSize(1);
         // Un usuario no puede ver el historial de otro
         assertThat(llamar(get("/api/transporte/servicios/usuario/" + idConductor), tokenCliente, null).getResponse().getStatus())
@@ -816,6 +824,282 @@ class FlujoCompletoTest {
         long servicio = ((Number) lanzado.get("servicio_id")).longValue();
         assertThat(db.queryForObject("SELECT estado FROM servicios WHERE id = ?", String.class, servicio)).isEqualTo("buscando");
         ok(post("/api/servicios/" + servicio + "/estado"), tokenCliente, Map.of("estado", "cancelado"));
+    }
+
+    // ───────────────────────── Panel administrativo (V15) ─────────────────────────
+
+    @Test
+    @Order(56)
+    void panelAdministrativoOperacionYSoporte() throws Exception {
+        // En vivo: el conductor conectado aparece en el mapa con su placa; un cliente no puede verlo
+        Map<String, Object> vivo = ok(get("/api/admin/en-vivo"), tokenAdmin, null);
+        assertThat(cast(vivo.get("conductores"))).anyMatch(c -> ((Number) c.get("id")).longValue() == idConductor
+                && "ABC12D".equals(c.get("placa")));
+        assertThat((Map<String, Object>) vivo.get("contadores")).containsKeys("sos_abiertas", "alertas_pendientes", "programados_24h");
+        assertThat(llamar(get("/api/admin/en-vivo"), tokenCliente, null).getResponse().getStatus()).isEqualTo(403);
+
+        // "¿Todo bien?": las de "estoy bien" no quedan pendientes; una sin respuesta sí, y se revisa una sola vez
+        long sinRespuesta = db.queryForObject("""
+                INSERT INTO alertas_viaje (servicio_id, usuario_id, tipo, respuesta) VALUES (?, ?, 'detenido', 'sin_respuesta')
+                RETURNING id""", Long.class, idServicio, idCliente);
+        List<Map<String, Object>> pendientes = lista(get("/api/admin/alertas-viaje?pendientes=true"), tokenAdmin);
+        assertThat(pendientes).extracting(a -> ((Number) a.get("id")).longValue()).containsExactly(sinRespuesta);
+        assertThat(pendientes.get(0)).containsEntry("placa", "ABC12D").containsKey("conductor_telefono");
+        ok(patch("/api/admin/alertas-viaje/" + sinRespuesta), tokenAdmin, Map.of("notas", "Llamamos al pasajero: tráfico"));
+        assertThat(llamar(patch("/api/admin/alertas-viaje/" + sinRespuesta), tokenAdmin, Map.of("notas", "otra vez"))
+                .getResponse().getStatus()).isEqualTo(404);
+        assertThat(lista(get("/api/admin/alertas-viaje?pendientes=true"), tokenAdmin)).isEmpty();
+
+        // PQRS con contexto: quién reporta, de qué viaje y a quién (el conductor de ese viaje)
+        Map<String, Object> creada = ok(post("/api/pqrs"), tokenCliente, Map.of("tipo", "objeto_olvidado",
+                "asunto", "Dejé mi sombrilla", "descripcion", "Una sombrilla azul en el asiento", "servicioId", idServicio));
+        long pqrs = ((Number) creada.get("id")).longValue();
+        Map<String, Object> fila = lista(get("/api/admin/pqrs"), tokenAdmin).stream()
+                .filter(r -> ((Number) r.get("id")).longValue() == pqrs).findFirst().orElseThrow();
+        assertThat(fila).containsEntry("reporta_rol", "cliente").containsEntry("descripcion", "Una sombrilla azul en el asiento");
+        assertThat(((Number) fila.get("reportado_id")).longValue()).isEqualTo(idConductor);
+        ok(patch("/api/admin/pqrs/" + pqrs), tokenAdmin, Map.of("estado", "resuelto",
+                "respuesta", "El conductor la tiene; te escribimos para coordinar la entrega."));
+        assertThat(lista(get("/api/admin/pqrs"), tokenAdmin)).noneMatch(r -> ((Number) r.get("id")).longValue() == pqrs);
+        assertThat(lista(get("/api/admin/pqrs?filtro=todos"), tokenAdmin)).anyMatch(r -> ((Number) r.get("id")).longValue() == pqrs);
+        assertThat(db.queryForObject("SELECT count(*) FROM notificaciones WHERE usuario_id = ? AND tipo = 'soporte'",
+                Integer.class, idCliente)).isEqualTo(1);
+
+        // Parámetros: un texto en un número rompería fn_config_num → se rechaza; el teléfono se normaliza
+        var malo = llamar(put("/api/admin/configuracion/radio_busqueda_km"), tokenAdmin, Map.of("valor", "abc"));
+        assertThat(malo.getResponse().getStatus()).isEqualTo(400);
+        var hora = llamar(put("/api/admin/configuracion/hora_inicio_nocturno"), tokenAdmin, Map.of("valor", "25"));
+        assertThat(hora.getResponse().getStatus()).isEqualTo(400);
+        assertThat(ok(put("/api/admin/configuracion/telefono_central"), tokenAdmin, Map.of("valor", "300 123 4567")))
+                .containsEntry("valor", "+573001234567");
+        assertThat(db.queryForObject("SELECT valor FROM configuracion_sistema WHERE clave = 'radio_busqueda_km'", String.class))
+                .isEqualTo("5");
+
+        // Resumen con las alertas del menú y auditoría con el nombre de quien hizo cada acción
+        Map<String, Object> totales = (Map<String, Object>) ok(get("/api/admin/resumen"), tokenAdmin, null).get("totales");
+        assertThat(totales).containsKeys("alertas_viaje_pendientes", "pqrs_vencidas", "documentos_por_vencer", "programados_pendientes");
+        Map<String, Object> auditoria = ok(get("/api/admin/auditoria"), tokenAdmin, null);
+        assertThat(cast(auditoria.get("acciones"))).anyMatch(a -> "alerta_viaje_revisada".equals(a.get("accion"))
+                && a.get("admin_nombre") != null);
+        assertThat(lista(get("/api/admin/programados"), tokenAdmin)).isNotEmpty();
+    }
+
+    /** V16: búsquedas paginadas, datos parciales, reasignar sin castigar, motivos obligatorios, roles, permisos y catálogos. */
+    @Test
+    @Order(57)
+    void panelAdministrativoControlado() throws Exception {
+        // Resumen del día y solicitudes filtradas/paginadas en el backend
+        Map<String, Object> dia = ok(get("/api/admin/resumen-dia"), tokenAdmin, null);
+        assertThat(dia).containsKeys("servicios_hoy", "buscando_demorados", "conductores_conectados", "cancelados_hoy", "por_hora");
+        Map<String, Object> pagina = ok(get("/api/admin/servicios/buscar?estado=cancelado&tamano=5"), tokenAdmin, null);
+        assertThat(cast(pagina.get("items"))).hasSizeLessThanOrEqualTo(5).allMatch(s -> "cancelado".equals(s.get("estado_codigo")));
+        assertThat(((Number) pagina.get("total")).intValue()).isGreaterThan(0);
+        assertThat(cast(ok(get("/api/admin/servicios/buscar").param("q", "#" + idServicio), tokenAdmin, null).get("items"))).hasSize(1);
+        assertThat(llamar(get("/api/admin/servicios/buscar?desde=ayer"), tokenAdmin, null).getResponse().getStatus()).isEqualTo(400);
+
+        // Reasignar un servicio atascado: vuelve a buscar y NO le cuenta cancelación al conductor
+        db.update("DELETE FROM usuarios_bloqueados");
+        ok(post("/api/transporte/activar"), tokenConductor, Map.of("activo", true, "lat", LAT + 0.002, "lng", LNG));
+        long id = ((Number) ok(post("/api/servicios"), tokenCliente, Map.of("origen_lat", LAT, "origen_lng", LNG,
+                "destino_lat", 3.89, "destino_lng", -77.02, "tipo_vehiculo", "moto")).get("id")).longValue();
+        ok(post("/api/servicios/" + id + "/estado"), tokenConductor, Map.of("estado", "asignado"));
+        int cancelacionesAntes = db.queryForObject("SELECT total_cancelaciones FROM conductores WHERE usuario_id = ?", Integer.class, idConductor);
+        assertThat(llamar(post("/api/admin/servicios/" + id + "/reasignar"), tokenAdmin, Map.of("motivo", "no")).getResponse().getStatus()).isEqualTo(400);
+        ok(post("/api/admin/servicios/" + id + "/reasignar"), tokenAdmin, Map.of("motivo", "El conductor no avanza hace 10 minutos"));
+        assertThat(db.queryForMap("SELECT estado, conductor_id FROM servicios WHERE id = ?", id))
+                .containsEntry("estado", "buscando").containsEntry("conductor_id", null);
+        assertThat(db.queryForObject("SELECT total_cancelaciones FROM conductores WHERE usuario_id = ?", Integer.class, idConductor))
+                .isEqualTo(cancelacionesAntes);
+
+        // Cancelar desde el panel: nunca sin motivo, y queda en la auditoría
+        assertThat(llamar(post("/api/admin/servicios/" + id + "/cancelar"), tokenAdmin, Map.of("motivo_id", 20))
+                .getResponse().getStatus()).isEqualTo(400);
+        ok(post("/api/admin/servicios/" + id + "/cancelar"), tokenAdmin, Map.of("motivo_id", 20, "motivo", "El cliente llamó a la línea"));
+        assertThat(db.queryForObject("SELECT count(*) FROM auditoria_admin WHERE accion = 'servicio_cancelado' AND entidad_id = ?",
+                Integer.class, id)).isEqualTo(1);
+
+        // Clientes: lista con datos parciales, detalle completo; bloquear exige motivo
+        Map<String, Object> clientes = ok(get("/api/admin/usuarios/buscar?q=Ana&rol=cliente"), tokenAdmin, null);
+        Map<String, Object> ana = cast(clientes.get("items")).get(0);
+        assertThat((String) ana.get("telefono")).contains("•").doesNotContain("1112233");
+        assertThat(ok(get("/api/admin/usuarios/" + idCliente), tokenAdmin, null)).containsEntry("telefono", "+573001112233")
+                .containsKeys("actividad", "servicios", "calificaciones", "pqrs", "reportes_en_contra");
+        assertThat(llamar(patch("/api/auth/usuarios/" + idCliente + "/estado"), tokenAdmin, Map.of("estado", "bloqueado"))
+                .getResponse().getStatus()).isEqualTo(400);
+
+        // Conductores: filtros en la base, documento oculto y checklist según el tipo de vehículo
+        Map<String, Object> motos = ok(get("/api/admin/conductores/buscar?tipo_vehiculo=moto"), tokenAdmin, null);
+        assertThat(cast(motos.get("items"))).allMatch(c -> "moto".equals(c.get("tipo_vehiculo")))
+                .allMatch(c -> String.valueOf(c.get("documento")).startsWith("••••"));
+        Map<String, Object> exp = ok(get("/api/admin/conductores/" + idConductor + "/expediente"), tokenAdmin, null);
+        List<Map<String, Object>> requisitos = cast(exp.get("requisitos"));
+        assertThat(requisitos).anyMatch(r -> "soat".equals(r.get("codigo")) && Boolean.TRUE.equals(r.get("obligatorio")));
+        assertThat(requisitos).noneMatch(r -> "tarjeta_operacion".equals(r.get("codigo")) && Boolean.TRUE.equals(r.get("obligatorio")));
+
+        // Reportes, CSV para Excel (sin fórmulas inyectadas) y calificaciones bajas
+        Map<String, Object> rep = ok(get("/api/admin/reportes"), tokenAdmin, null);
+        assertThat((Map<String, Object>) rep.get("totales")).containsKeys("tasa_perdida", "min_aceptacion", "efectivo");
+        var csv = llamar(get("/api/admin/reportes/servicios.csv"), tokenAdmin, null);
+        assertThat(csv.getResponse().getStatus()).isEqualTo(200);
+        assertThat(csv.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8)).startsWith("﻿Servicio;Fecha;");
+        assertThat(llamar(get("/api/admin/reportes/servicios.csv"), tokenCliente, null).getResponse().getStatus()).isEqualTo(403);
+        assertThat(((Number) ok(get("/api/admin/calificaciones?maximo=5"), tokenAdmin, null).get("total")).intValue()).isPositive();
+
+        // Equipo: se da el rol a una cuenta que ya existe; no se puede quitar el último admin ni el propio
+        assertThat(llamar(post("/api/admin/equipo"), tokenAdmin, Map.of("identificador", "3209998877", "rol", "soporte"))
+                .getResponse().getStatus()).isEqualTo(404);
+        ok(post("/api/admin/equipo"), tokenAdmin, Map.of("identificador", "300 111 2233", "rol", "soporte"));
+        assertThat(db.queryForObject("SELECT count(*) FROM usuario_roles WHERE usuario_id = ? AND rol = 'soporte'", Integer.class, idCliente)).isEqualTo(1);
+        ok(delete("/api/admin/usuarios/" + idCliente + "/roles/soporte"), tokenAdmin, null);
+        long idAdmin = db.queryForObject("SELECT usuario_id FROM usuario_roles WHERE rol = 'admin' LIMIT 1", Long.class);
+        assertThat(llamar(delete("/api/admin/usuarios/" + idAdmin + "/roles/admin"), tokenAdmin, null).getResponse().getStatus()).isEqualTo(400);
+
+        // Permisos: los de soporte se ajustan; los de admin son fijos
+        assertThat(llamar(put("/api/admin/permisos"), tokenAdmin, Map.of("rol", "admin", "permiso", "tarifas.ver", "activo", false))
+                .getResponse().getStatus()).isEqualTo(400);
+        ok(put("/api/admin/permisos"), tokenAdmin, Map.of("rol", "soporte", "permiso", "reportes.exportar", "activo", true));
+        assertThat(db.queryForObject("SELECT count(*) FROM rol_permisos WHERE rol = 'soporte' AND permiso = 'reportes.exportar'", Integer.class)).isEqualTo(1);
+        ok(put("/api/admin/permisos"), tokenAdmin, Map.of("rol", "soporte", "permiso", "reportes.exportar", "activo", false));
+
+        // Contenido prohibido editable: una palabra nueva se bloquea al instante (sin desplegar)
+        Map<String, Object> palabra = ok(post("/api/admin/catalogos/contenido-prohibido"), tokenAdmin,
+                Map.of("palabra", "Escopolamina", "categoria", "drogas", "tipo", "prohibida"));
+        var domicilio = llamar(post("/api/servicios"), tokenCliente, Map.of("tipo", "domicilio", "tipo_vehiculo", "moto",
+                "origen_lat", LAT, "origen_lng", LNG, "destino_lat", 3.89, "destino_lng", -77.02,
+                "descripcion", "Tráeme escopolamina de la farmacia"));
+        assertThat(domicilio.getResponse().getStatus()).isEqualTo(400);
+        ok(delete("/api/admin/catalogos/contenido-prohibido/" + ((Number) palabra.get("id")).longValue()), tokenAdmin, null);
+        assertThat(ok(get("/api/admin/catalogos/operacion"), tokenAdmin, null)).containsKeys("tipos_vehiculo", "permitidos", "limites");
+
+        // Recargo por lluvia: solo cuando el admin lo prende
+        ok(post("/api/admin/tarifas"), tokenAdmin, Map.of("tipo_servicio", "transporte", "tipo_vehiculo", "moto", "tarifa_base", 2500,
+                "valor_km", 900, "valor_minuto", 100, "tarifa_minima", 4000, "recargo_nocturno_pct", 0, "recargo_lluvia_pct", 50));
+        ok(put("/api/admin/configuracion/lluvia_activa"), tokenAdmin, Map.of("valor", "0"));
+        String cotizar = "/api/tarifas/cotizar?tipo_vehiculo=moto&origen_lat=" + LAT + "&origen_lng=" + LNG + "&destino_lat=3.8900&destino_lng=-77.0200";
+        double seco = ((Number) cast(ok(get(cotizar), null, null).get("opciones")).get(0).get("valor_estimado")).doubleValue();
+        ok(put("/api/admin/configuracion/lluvia_activa"), tokenAdmin, Map.of("valor", "1"));
+        Map<String, Object> mojado = ok(get(cotizar), null, null);
+        assertThat(mojado).containsEntry("lluvia", true);
+        assertThat(((Number) cast(mojado.get("opciones")).get(0).get("valor_estimado")).doubleValue()).isGreaterThan(seco);
+        ok(put("/api/admin/configuracion/lluvia_activa"), tokenAdmin, Map.of("valor", "0"));
+    }
+
+    /** Notificaciones de la app: cada quien ve y marca solo las suyas. */
+    @Test
+    @Order(58)
+    void notificacionesPropias() throws Exception {
+        Map<String, Object> mias = ok(get("/api/notificaciones?tamano=5"), tokenCliente, null);
+        List<Map<String, Object>> items = cast(mias.get("items"));
+        assertThat(items).isNotEmpty().hasSizeLessThanOrEqualTo(5);
+        assertThat(items.get(0)).containsKeys("titulo", "cuerpo", "evento", "servicio_id", "leida_en");
+        long noLeidas = ((Number) ok(get("/api/notificaciones/no-leidas"), tokenCliente, null).get("no_leidas")).longValue();
+        assertThat(noLeidas).isPositive();
+
+        // La notificación de otro no se puede marcar (404, sin revelar que existe)
+        long ajena = db.queryForObject("SELECT id FROM notificaciones WHERE usuario_id <> ? LIMIT 1", Long.class, idCliente);
+        assertThat(llamar(post("/api/notificaciones/" + ajena + "/leida"), tokenCliente, null).getResponse().getStatus()).isEqualTo(404);
+
+        long propia = ((Number) items.get(0).get("id")).longValue();
+        db.update("UPDATE notificaciones SET leida_en = NULL WHERE id = ?", propia);
+        long antes = ((Number) ok(get("/api/notificaciones/no-leidas"), tokenCliente, null).get("no_leidas")).longValue();
+        assertThat(((Number) ok(post("/api/notificaciones/" + propia + "/leida"), tokenCliente, null).get("no_leidas")).longValue())
+                .isEqualTo(antes - 1);
+        ok(post("/api/notificaciones/leer-todas"), tokenCliente, null);
+        assertThat(((Number) ok(get("/api/notificaciones/no-leidas"), tokenCliente, null).get("no_leidas")).longValue()).isZero();
+        assertThat(llamar(get("/api/notificaciones"), null, null).getResponse().getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    @Order(59)
+    void gananciasDelConductorEnLaApp() throws Exception {
+        String base = "/api/transporte/ganancias-resumen/" + idConductor;
+        double hoyBd = db.queryForObject("""
+                SELECT COALESCE(SUM(valor_final), 0) FROM servicios
+                WHERE conductor_id = ? AND estado = 'finalizado'
+                  AND (finalizado_en AT TIME ZONE 'America/Bogota')::date = (now() AT TIME ZONE 'America/Bogota')::date""",
+                Double.class, idConductor);
+        assertThat(hoyBd).isPositive();
+
+        // Hoy: 8 bloques de 3 horas (también los vacíos); las barras y el desglose suman el total
+        Map<String, Object> hoy = ok(get(base), tokenConductor, null);
+        assertThat(hoy).containsEntry("periodo", "hoy").containsKeys("km", "minutos", "promedio", "anterior", "tendencia");
+        assertThat(((Number) hoy.get("total")).doubleValue()).isEqualTo(hoyBd);
+        assertThat(((Number) hoy.get("viajes")).longValue()).isPositive();
+        List<Map<String, Object>> barras = cast(hoy.get("barras"));
+        assertThat(barras).hasSize(8);
+        assertThat(barras.stream().mapToDouble(b -> ((Number) b.get("valor")).doubleValue()).sum()).isEqualTo(hoyBd);
+        assertThat(cast(hoy.get("por_tipo")).stream().mapToDouble(t -> ((Number) t.get("valor")).doubleValue()).sum())
+                .isEqualTo(hoyBd);
+
+        // Semana: lunes a domingo; mes: todos los días del mes en curso
+        assertThat(cast(ok(get(base + "?periodo=semana"), tokenConductor, null).get("barras"))).hasSize(7);
+        int diasMes = java.time.YearMonth.now(java.time.ZoneId.of("America/Bogota")).lengthOfMonth();
+        Map<String, Object> mes = ok(get(base + "?periodo=mes"), tokenConductor, null);
+        assertThat(cast(mes.get("barras"))).hasSize(diasMes);
+        assertThat(((Number) mes.get("total")).doubleValue()).isGreaterThanOrEqualTo(hoyBd);
+
+        // Un periodo raro no se mete al SQL: se trata como "hoy"
+        assertThat(ok(get(base).param("periodo", "x');DROP"), tokenConductor, null)).containsEntry("periodo", "hoy");
+        // Las ganancias de un conductor solo las ve él
+        assertThat(llamar(get(base), tokenCliente, null).getResponse().getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    @Order(59)
+    void desempenoDelConductorEnSuPerfil() throws Exception {
+        Map<String, Object> d = ok(get("/api/conductor/mi-desempeno"), tokenConductor, null);
+        assertThat(d).containsKeys("calificacion_promedio", "tasa_cancelacion", "favoritos", "conductor_desde")
+                .containsEntry("limite_cancelacion", 20.0);
+        // La calificación de 5 con "Muy bien" del viaje: cuenta en las estrellas y el comentario sale sin el nombre
+        assertThat(((Number) ((Map<String, Object>) d.get("estrellas")).get("5")).longValue()).isPositive();
+        List<Map<String, Object>> comentarios = cast(d.get("comentarios"));
+        assertThat(comentarios).anyMatch(c -> "Muy bien".equals(c.get("comentario")));
+        assertThat(comentarios.get(0)).doesNotContainKeys("calificador_id", "nombre", "cliente_nombre");
+        long cerrados = db.queryForObject("SELECT total_servicios + total_cancelaciones FROM conductores WHERE usuario_id = ?",
+                Long.class, idConductor);
+        assertThat(d.get("sancionado")).isEqualTo(cerrados >= 5 && ((Number) d.get("tasa_cancelacion")).doubleValue() > 20.0);
+        // Un cliente no tiene desempeño de conductor
+        assertThat(llamar(get("/api/conductor/mi-desempeno"), tokenCliente, null).getResponse().getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    @Order(59)
+    void perfilDelConductorSobreMiElogiosYDesvincular() throws Exception {
+        // Servicios autorizados: salen de servicio_vehiculo_permitido (la moto recibe los tres)
+        Map<String, Object> perfil = ok(get("/api/conductor/mi-perfil"), tokenConductor, null);
+        assertThat(cast(perfil.get("servicios_autorizados"))).extracting(s -> s.get("codigo"))
+                .containsExactly("transporte", "domicilio", "encomienda");
+
+        // "Sobre mí": sin teléfonos ni enlaces; el pasajero lo ve con la señal de verificado
+        assertThat(llamar(put("/api/conductor/sobre-mi"), tokenConductor, Map.of("texto", "Escríbeme al 300 123 4567"))
+                .getResponse().getStatus()).isEqualTo(400);
+        assertThat(llamar(put("/api/conductor/sobre-mi"), tokenConductor, Map.of("texto", "Mira www.mipagina.com"))
+                .getResponse().getStatus()).isEqualTo(400);
+        ok(put("/api/conductor/sobre-mi"), tokenConductor, Map.of("texto", "  Llevo 8 años   manejando en Buenaventura. "));
+        Map<String, Object> visto = ok(get("/api/servicios/" + idServicio), tokenCliente, null);
+        assertThat(visto).containsEntry("conductor_sobre_mi", "Llevo 8 años manejando en Buenaventura.")
+                .containsEntry("conductor_verificado", true).containsKey("conductor_elogios");
+        assertThat(llamar(put("/api/conductor/sobre-mi"), tokenCliente, Map.of("texto", "Hola")).getResponse().getStatus())
+                .isEqualTo(403);
+
+        // Elogios: lista cerrada según a quién se califica (al pasajero no se le dice "Manejó con cuidado")
+        assertThat(llamar(post("/api/servicios/" + idServicio + "/calificar"), tokenConductor,
+                Map.of("puntuacion", 5, "elogios", List.of("Manejó con cuidado"))).getResponse().getStatus()).isEqualTo(400);
+        ok(post("/api/servicios/" + idServicio + "/calificar"), tokenConductor,
+                Map.of("puntuacion", 5, "elogios", List.of("Pagó completo", "Muy amable"), "comentario", "Puntual"));
+        assertThat(db.queryForObject("""
+                SELECT array_to_string(elogios, '|') FROM calificaciones WHERE servicio_id = ? AND calificador_id = ?""",
+                String.class, idServicio, idConductor)).isEqualTo("Pagó completo|Muy amable");
+        assertThat(ok(get("/api/conductor/mi-desempeno"), tokenConductor, null)).containsKey("elogios");
+
+        // Desvincular: el conductor bloquea al pasajero, lo ve en su lista (sin teléfono) y lo puede quitar
+        ok(post("/api/servicios/" + idServicio + "/bloquear"), tokenConductor, Map.of("motivo", "Prueba de desvincular"));
+        List<Map<String, Object>> bloqueados = lista(get("/api/usuarios/bloqueados"), tokenConductor);
+        assertThat(bloqueados).anyMatch(b -> ((Number) b.get("id")).longValue() == idCliente);
+        assertThat(bloqueados.get(0)).doesNotContainKeys("telefono", "foto");
+        ok(delete("/api/usuarios/bloqueados/" + idCliente), tokenConductor, null);
+        assertThat(llamar(delete("/api/usuarios/bloqueados/" + idCliente), tokenConductor, null).getResponse().getStatus())
+                .isEqualTo(404);
     }
 
     // ───────────────────────── Web ─────────────────────────

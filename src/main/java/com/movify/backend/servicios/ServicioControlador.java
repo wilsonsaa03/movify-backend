@@ -26,6 +26,7 @@ import com.movify.backend.servicios.ServicioDtos.SolicitudRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Size;
 
 /**
  * API de servicios para la app móvil (y los historiales que ya usaba la web).
@@ -92,13 +93,14 @@ public class ServicioControlador {
         return viajes.cambiarEstado(id, req);
     }
 
-    public record CalificarRequest(@Min(1) @Max(5) int puntuacion, String comentario) {
+    public record CalificarRequest(@Min(1) @Max(5) int puntuacion, @Size(max = 300) String comentario,
+            @Size(max = 6) List<@Size(max = 40) String> elogios) {
     }
 
     @PostMapping("/{id}/calificar")
     @PreAuthorize("hasAuthority('calificaciones.crear')")
     public Map<String, Object> calificar(@PathVariable Long id, @Valid @RequestBody CalificarRequest req) {
-        viajes.calificar(id, req.puntuacion(), req.comentario());
+        viajes.calificar(id, req.puntuacion(), req.comentario(), req.elogios());
         return Map.of("message", "¡Gracias por calificar!");
     }
 

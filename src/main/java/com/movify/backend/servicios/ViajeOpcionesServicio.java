@@ -275,14 +275,30 @@ public class ViajeOpcionesServicio {
 
     /** "No volver a emparejarme con este conductor" (la BD lo respeta al ofrecer y al aceptar). */
     @Transactional
+    /**
+     * "No volver a emparejarme" (desvincular, como DiDi): el pasajero bloquea al conductor del servicio o el
+     * conductor bloquea al pasajero. fn_servicios_disponibles lo respeta en los dos sentidos.
+     */
     public Map<String, Object> bloquear(Long servicioId, String motivo) {
-        Long conductor = conductorDelServicio(servicioId);
+        Map<String, Object> s = db.queryForList("SELECT cliente_id, conductor_id FROM servicios WHERE id = ?", servicioId)
+                .stream().findFirst().orElseThrow(() -> new RecursoNoEncontradoException(NO_ENCONTRADO));
+        Long yo = sesion.usuarioId();
+        Long cliente = Datos.aLong(s.get("cliente_id"));
+        Long conductor = Datos.aLong(s.get("conductor_id"));
+        boolean soyConductor = conductor != null && Objects.equals(conductor, yo);
+        if (!soyConductor && !Objects.equals(cliente, yo)) {
+            throw new AccesoDenegadoException("Solo quien participó en el servicio puede hacer esto");
+        }
+        if (conductor == null) throw new ReglaNegocioException(400, "Este servicio no tuvo conductor.");
+        Long otro = soyConductor ? cliente : conductor;
         db.update("""
                 INSERT INTO usuarios_bloqueados (usuario_id, bloqueado_id, motivo) VALUES (?, ?, ?)
                 ON CONFLICT (usuario_id, bloqueado_id) DO UPDATE SET motivo = EXCLUDED.motivo
-                """, sesion.usuarioId(), conductor, Datos.recortar(Datos.vacioANull(motivo), 200));
-        db.update("DELETE FROM conductores_favoritos WHERE cliente_id = ? AND conductor_id = ?", sesion.usuarioId(), conductor);
-        return Map.of("message", "Listo. No te volveremos a emparejar con este conductor.");
+                """, yo, otro, Datos.recortar(Datos.vacioANull(motivo), 200));
+        if (!soyConductor) db.update("DELETE FROM conductores_favoritos WHERE cliente_id = ? AND conductor_id = ?", yo, conductor);
+        return Map.of("message", soyConductor
+                ? "Listo. No te volveremos a mostrar solicitudes de este pasajero."
+                : "Listo. No te volveremos a emparejar con este conductor.");
     }
 
     // ═════════════════════════════ Foto del vehículo ═════════════════════════════
