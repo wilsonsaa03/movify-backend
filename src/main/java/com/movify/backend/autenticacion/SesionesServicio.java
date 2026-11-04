@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 
 import com.movify.backend.comun.Datos;
 import com.movify.backend.configuracion.ContextoPeticion;
+import com.movify.backend.seguridad.VigenciaTokens;
 
 /**
  * Refresh tokens (tabla sesiones). El access token (JWT) dura poco; con el refresh la app
@@ -24,9 +25,11 @@ public class SesionesServicio {
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final JdbcTemplate db;
+    private final VigenciaTokens vigencia;
 
-    public SesionesServicio(JdbcTemplate db) {
+    public SesionesServicio(JdbcTemplate db, VigenciaTokens vigencia) {
         this.db = db;
+        this.vigencia = vigencia;
     }
 
     public record Refresh(String token, long usuarioId) {
@@ -63,8 +66,11 @@ public class SesionesServicio {
         db.update("UPDATE sesiones SET revocada_en = now() WHERE refresh_hash = ? AND revocada_en IS NULL", sha256(token));
     }
 
+    /** Cierra todas las sesiones: los refresh y también los JWT de acceso ya entregados (V18). */
     public void revocarTodas(Long usuarioId) {
         db.update("UPDATE sesiones SET revocada_en = now() WHERE usuario_id = ? AND revocada_en IS NULL", usuarioId);
+        db.update("UPDATE usuarios SET tokens_validos_desde = now() WHERE id = ?", usuarioId);
+        if (vigencia != null) vigencia.olvidar(usuarioId);
     }
 
     static Long usuario(Map<String, Object> fila) {

@@ -59,7 +59,7 @@ public final class AuthDtos {
 
     public record LoginRequest(
             @NotBlank(message = "El correo es obligatorio") @Email(message = "Correo no válido") String correo,
-            @NotBlank(message = "La contraseña es obligatoria") String password) {
+            @NotBlank(message = "La contraseña es obligatoria") @Size(max = 72) String password) {
     }
 
     public record RegistroUsuarioRequest(
@@ -75,7 +75,13 @@ public final class AuthDtos {
             @NotBlank @Email String correo,
             @NotBlank @Size(min = 10, max = 72, message = "La contraseña del admin debe tener al menos 10 caracteres")
             String password,
-            @NotBlank(message = "El código de administrador es obligatorio") String codigoAdmin) {
+            @NotBlank(message = "El código de administrador es obligatorio") @Size(max = 200) String codigoAdmin) {
+    }
+
+    /** Segundo paso del equipo (admin/soporte): el desafío del primer paso + el código de 6 números. */
+    public record LoginVerificarRequest(
+            @NotBlank(message = "Vuelve a iniciar sesión") String desafio,
+            @NotBlank(message = "Escribe el código") @Pattern(regexp = "\\d{6}", message = "El código tiene 6 números") String codigo) {
     }
 
     /** credential = id_token que entrega Google Identity Services (web) o el plugin de la app. */

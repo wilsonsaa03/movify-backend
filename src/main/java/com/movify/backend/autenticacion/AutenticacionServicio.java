@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,6 +62,7 @@ public class AutenticacionServicio {
     private final JavaMailSender correo;
     private final RegistroAccesos accesos;
     private final SesionesServicio sesiones;
+    private final SegundoFactorServicio segundoFactor;
 
     /** Sin valor por defecto: si no está la variable de entorno, el registro de admin queda cerrado. */
     @Value("${app.admin.secret-code:}")
@@ -74,7 +76,7 @@ public class AutenticacionServicio {
 
     public AutenticacionServicio(UsuarioRepositorio usuarios, PasswordEncoder encoder, JwtUtil jwt,
             GoogleTokenVerificador google, JdbcTemplate db, JavaMailSender correo, RegistroAccesos accesos,
-            SesionesServicio sesiones) {
+            SesionesServicio sesiones, SegundoFactorServicio segundoFactor) {
         this.usuarios = usuarios;
         this.encoder = encoder;
         this.jwt = jwt;
@@ -83,6 +85,7 @@ public class AutenticacionServicio {
         this.correo = correo;
         this.accesos = accesos;
         this.sesiones = sesiones;
+        this.segundoFactor = segundoFactor;
     }
 
     // ═════════════════════════════ Inicio de sesión ═════════════════════════════
@@ -101,6 +104,8 @@ public class AutenticacionServicio {
             // Mismo mensaje para correo inexistente y clave errada: no se revela qué correos existen
             throw new ReglaNegocioException(401, "Correo o contraseña incorrectos");
         }
+        // Admin y soporte: falta el código del segundo factor (todavía no hay sesión)
+        if (segundoFactor.requiere(usuarios.roles(u.id()))) return segundoFactor.iniciar(u, "password", ctx);
         return entrar(u, email, "password", ctx);
     }
 
@@ -117,6 +122,7 @@ public class AutenticacionServicio {
             accesos.registrar(u.id(), tel, "password", "password_invalido", ctx);
             throw new ReglaNegocioException(401, "Celular o clave incorrectos");
         }
+        exigirQueNoSeaEquipo(u);
         return entrar(u, tel, "password", ctx);
     }
 
@@ -127,6 +133,7 @@ public class AutenticacionServicio {
         Usuario u = usuarios.porTelefono(tel)
                 .orElseThrow(() -> new RecursoNoEncontradoException("No hay una cuenta con ese celular. Regístrate."));
         validarPuedeEntrar(u, tel, "sms", ctx);
+        exigirQueNoSeaEquipo(u);
         db.update("UPDATE usuarios SET telefono_verificado = true WHERE id = ? AND NOT telefono_verificado", u.id());
         return entrar(u, tel, "sms", ctx);
     }
@@ -152,7 +159,39 @@ public class AutenticacionServicio {
             u = usuarios.porGoogleSub(g.sub()).orElseThrow();
         }
         validarPuedeEntrar(u, g.correo(), "google", ctx);
+        if (segundoFactor.requiere(usuarios.roles(u.id()))) return segundoFactor.iniciar(u, "google", ctx);
         return entrar(u, g.correo(), "google", ctx);
+    }
+
+    /** Segundo paso del equipo: el código que llegó por SMS o correo. Recién aquí hay sesión. */
+    @Transactional(noRollbackFor = ReglaNegocioException.class)
+    public Map<String, Object> verificarSegundoFactor(String desafio, String codigo, ContextoPeticion ctx) {
+        SegundoFactorServicio.Verificado v;
+        try {
+            v = segundoFactor.verificar(desafio, codigo);
+        } catch (ReglaNegocioException e) {
+            // El código errado cuenta como intento fallido: 5 seguidos bloquean la cuenta un rato (DER)
+            Long uid = segundoFactor.usuarioDe(desafio);
+            if (uid != null && e.getStatus() == 400) {
+                accesos.registrar(uid, String.valueOf(uid), "password", "codigo_invalido", ctx);
+            }
+            throw e;
+        }
+        Usuario u = usuarios.porId(v.usuarioId())
+                .orElseThrow(() -> new ReglaNegocioException(401, "Vuelve a iniciar sesión."));
+        String identificador = u.email() != null ? u.email() : String.valueOf(u.id());
+        validarPuedeEntrar(u, identificador, v.metodo(), ctx);
+        return entrar(u, identificador, v.metodo(), ctx);
+    }
+
+    /**
+     * La app (clave de 4 números o solo el SMS) es un solo factor: el equipo entra únicamente por el panel web,
+     * que le pide contraseña + código.
+     */
+    private void exigirQueNoSeaEquipo(Usuario u) {
+        if (segundoFactor.requiere(usuarios.roles(u.id()))) {
+            throw new AccesoDenegadoException("Las cuentas del equipo de MoviFY entran desde el panel web.");
+        }
     }
 
     @Transactional
@@ -314,17 +353,26 @@ public class AutenticacionServicio {
         Usuario u = usuarios.porTelefono(tel)
                 .orElseThrow(() -> new RecursoNoEncontradoException("No hay una cuenta con ese celular."));
         validarPuedeEntrar(u, tel, "sms", ctx);
+        exigirQueNoSeaEquipo(u);
         exigirClaveSegura(clave);
         usuarios.actualizarPassword(u.id(), encoder.encode(clave));
         sesiones.revocarTodas(u.id()); // se cierran las sesiones abiertas con la clave anterior
         return entrar(usuarios.porId(u.id()).orElseThrow(), tel, "sms", ctx);
     }
 
-    /** Web: enlace por correo. Siempre responde lo mismo para no revelar si el correo existe. */
+    /**
+     * Web: enlace por correo. Siempre responde lo mismo para no revelar si el correo existe, y el correo
+     * sale en segundo plano: si se enviara aquí, la respuesta tardaría más cuando el correo SÍ existe.
+     */
     public void solicitarRecuperacion(String correoIngresado) {
-        Usuario u = usuarios.porEmail(correoIngresado.trim()).filter(x -> x.passwordHash() != null).orElse(null);
+        Usuario u = usuarios.porEmail(correoIngresado.trim().toLowerCase(Locale.ROOT))
+                .filter(x -> x.passwordHash() != null).orElse(null);
         if (u == null) return;
         String token = jwt.generarRestablecer(u.id(), huella(u.passwordHash()));
+        CompletableFuture.runAsync(() -> enviarRecuperacion(u, token));
+    }
+
+    private void enviarRecuperacion(Usuario u, String token) {
         try {
             SimpleMailMessage msg = new SimpleMailMessage();
             msg.setFrom(remitente);
@@ -336,7 +384,7 @@ public class AutenticacionServicio {
                     + "Si no lo pediste, ignora este correo.\n\nEquipo MoviFY");
             correo.send(msg);
         } catch (Exception e) {
-            log.error("No se pudo enviar el correo de recuperación a {}", u.email(), e);
+            log.error("No se pudo enviar el correo de recuperación al usuario {}", u.id(), e);
         }
     }
 

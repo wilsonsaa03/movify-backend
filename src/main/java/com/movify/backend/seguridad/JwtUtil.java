@@ -25,6 +25,7 @@ import jakarta.annotation.PostConstruct;
  *  - acceso:       el de cada petición (Authorization: Bearer ...)
  *  - verificacion: prueba de que la persona escribió bien el código SMS (15 min)
  *  - restablecer:  enlace del correo para cambiar la contraseña de la web (30 min)
+ *  - desafio:      el equipo ya puso bien su contraseña; falta el código del segundo factor (10 min)
  */
 @Component
 public class JwtUtil {
@@ -32,6 +33,7 @@ public class JwtUtil {
     private static final String ACCESO = "acceso";
     private static final String VERIFICACION = "verificacion";
     private static final String RESTABLECER = "restablecer";
+    private static final String DESAFIO = "desafio";
 
     @Value("${app.jwt.secret}")
     private String secret;
@@ -80,9 +82,10 @@ public class JwtUtil {
     public UsuarioAutenticado leerAcceso(String token) {
         try {
             Claims c = parsear(token);
-            if (!ACCESO.equals(c.get("tipo", String.class))) return null;
+            if (!ACCESO.equals(c.get("tipo", String.class)) || c.getIssuedAt() == null) return null;
             return new UsuarioAutenticado(Long.valueOf(c.getSubject()), c.get("correo", String.class),
-                    c.get("rol", String.class), conjunto(c.get("roles")), conjunto(c.get("permisos")));
+                    c.get("rol", String.class), conjunto(c.get("roles")), conjunto(c.get("permisos")),
+                    c.getIssuedAt().getTime() / 1000);
         } catch (JwtException | IllegalArgumentException e) {
             return null;
         }
@@ -138,6 +141,33 @@ public class JwtUtil {
         } catch (JwtException | IllegalArgumentException e) {
             return null;
         }
+    }
+
+    // ───────────── Segundo factor del equipo (admin / soporte) ─────────────
+
+    /** Prueba de que la contraseña ya fue correcta; falta el código (10 min). */
+    public String generarDesafio(Long usuarioId, long desafioId) {
+        return Jwts.builder()
+                .setSubject(String.valueOf(usuarioId))
+                .claim("tipo", DESAFIO)
+                .setId(String.valueOf(desafioId))
+                .setIssuedAt(new Date())
+                .setExpiration(new Date(System.currentTimeMillis() + 10 * 60 * 1000L))
+                .signWith(key, SignatureAlgorithm.HS256)
+                .compact();
+    }
+
+    /** @return {usuarioId, desafioId}; 401 si venció o no es un desafío. */
+    public long[] leerDesafio(String token) {
+        try {
+            Claims c = parsear(token);
+            if (DESAFIO.equals(c.get("tipo", String.class))) {
+                return new long[] { Long.parseLong(c.getSubject()), Long.parseLong(c.getId()) };
+            }
+        } catch (JwtException | IllegalArgumentException e) {
+            // cae al error de abajo
+        }
+        throw new ReglaNegocioException(401, "El código venció. Vuelve a iniciar sesión.");
     }
 
     private Claims parsear(String token) {

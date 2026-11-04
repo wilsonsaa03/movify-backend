@@ -16,15 +16,23 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy;
+import org.springframework.security.web.header.writers.StaticHeadersWriter;
+import org.springframework.security.web.util.matcher.AnyRequestMatcher;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import com.movify.backend.seguridad.JwtFiltro;
+import com.movify.backend.seguridad.LimitePeticionesFiltro;
+import com.movify.backend.seguridad.VigilanciaSeguridad;
 
 /**
  * Reglas gruesas por URL. Las finas van en cada método con
  * @PreAuthorize("hasAuthority('modulo.accion')"), usando los permisos del DER (rol_permisos).
+ *
+ * Sin CSRF a propósito: la API no usa cookies. El token viaja en el header Authorization, que un sitio
+ * ajeno no puede poner en una petición del navegador de la víctima (eso es justo lo que explota CSRF).
  */
 @Configuration
 @EnableWebSecurity
@@ -41,14 +49,31 @@ public class SecurityConfig {
     }
 
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http, JwtFiltro jwtFiltro) throws Exception {
+    public SecurityFilterChain filterChain(HttpSecurity http, JwtFiltro jwtFiltro, LimitePeticionesFiltro limite,
+            VigilanciaSeguridad vigilancia) throws Exception {
         http
                 .csrf(csrf -> csrf.disable()) // API sin cookies: el token va en el header
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                // Cabeceras de seguridad de la API (la web tiene las suyas en public/.htaccess)
+                .headers(h -> h
+                        .contentSecurityPolicy(c -> c.policyDirectives(
+                                "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"))
+                        .referrerPolicy(r -> r.policy(ReferrerPolicy.NO_REFERRER))
+                        // HSTS siempre: detrás de Apache la petición llega como http, pero al navegador le llega por https
+                        .httpStrictTransportSecurity(s -> s.requestMatcher(AnyRequestMatcher.INSTANCE)
+                                .includeSubDomains(true).maxAgeInSeconds(31_536_000))
+                        .addHeaderWriter(new StaticHeadersWriter("Permissions-Policy",
+                                "camera=(), microphone=(), geolocation=(), payment=()")))
                 .exceptionHandling(e -> e
                         .authenticationEntryPoint((req, res, ex) -> responder(res, 401, "Debes iniciar sesión"))
-                        .accessDeniedHandler((req, res, ex) -> responder(res, 403, "No tienes permiso para esta acción")))
+                        .accessDeniedHandler((req, res, ex) -> {
+                            if (req.getRequestURI().startsWith("/api/admin")) {
+                                vigilancia.registrar("admin_sin_permiso", ContextoPeticion.ipCliente(req),
+                                        req.getMethod() + " " + req.getRequestURI(), "");
+                            }
+                            responder(res, 403, "No tienes permiso para esta acción");
+                        }))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         // Públicos: entrar, registrarse y recuperar el acceso
@@ -57,6 +82,7 @@ public class SecurityConfig {
                                 "/api/auth/login-celular",
                                 "/api/auth/login-codigo",
                                 "/api/auth/login-google",
+                                "/api/auth/login-verificar",
                                 "/api/auth/registro",
                                 "/api/auth/registro-movil",
                                 "/api/auth/registro-admin",
@@ -80,6 +106,8 @@ public class SecurityConfig {
                         .requestMatchers("/api/conductor/documento/**").hasAuthority("admin_conductores.ver")
                         // Todo lo demás exige sesión; la propiedad del recurso se valida en cada endpoint
                         .anyRequest().authenticated())
+                // Primero el límite de peticiones (después de CORS, para que el 429 llegue legible a la web)
+                .addFilterBefore(limite, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtFiltro, UsernamePasswordAuthenticationFilter.class);
         return http.build();
     }
@@ -95,10 +123,12 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(Arrays.stream(origenesPermitidos.split(",")).map(String::trim).toList());
+        // Patrones: un origen exacto se compara igual que antes; en local se puede permitir la red de la casa
+        // (p. ej. http://192.168.*.*:8100) para probar desde el celular por Wi-Fi.
+        config.setAllowedOriginPatterns(Arrays.stream(origenesPermitidos.split(",")).map(String::trim).toList());
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
         config.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Plataforma"));
-        config.setExposedHeaders(List.of("Content-Disposition"));
+        config.setExposedHeaders(List.of("Content-Disposition", "Retry-After"));
         config.setAllowCredentials(false);
         config.setMaxAge(3600L);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

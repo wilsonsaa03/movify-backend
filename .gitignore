@@ -41,3 +41,7 @@ uploads-conductores/
 *.sql.bak
 dump-*.sql
 dump-*.zip
+
+# Registros del editor (Metals/VS Code): rutas locales y fragmentos de código
+.metals/
+.bloop/

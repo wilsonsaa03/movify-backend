@@ -26,6 +26,15 @@ public class CatalogoControlador {
         return catalogos.catalogos();
     }
 
+    /**
+     * Versión de la app que se exige (pública: la app la consulta al abrir, antes de iniciar sesión).
+     * Si la instalada es menor que "minima", la app muestra "Actualiza MoviFY" y no deja seguir.
+     */
+    @GetMapping("/catalogos/app-version")
+    public Map<String, Object> versionApp() {
+        return catalogos.versionApp();
+    }
+
     @GetMapping("/catalogos/documentos-legales")
     public List<Map<String, Object>> documentosLegales() {
         return catalogos.documentosLegales();

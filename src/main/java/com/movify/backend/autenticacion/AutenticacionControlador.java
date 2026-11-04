@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.movify.backend.autenticacion.AuthDtos.GoogleLoginRequest;
+import com.movify.backend.autenticacion.AuthDtos.LoginVerificarRequest;
 import com.movify.backend.autenticacion.AuthDtos.LoginCelularRequest;
 import com.movify.backend.autenticacion.AuthDtos.LoginCodigoRequest;
 import com.movify.backend.autenticacion.AuthDtos.LoginRequest;
@@ -121,6 +122,15 @@ public class AutenticacionControlador {
     @PostMapping("/login")
     public Map<String, Object> login(@Valid @RequestBody LoginRequest req, HttpServletRequest http) {
         return auth.loginCorreo(req, ContextoPeticion.de(http));
+    }
+
+    /**
+     * Admin y soporte: /login o /login-google responden { segundoFactor: true, desafio, canal, destino } y aquí
+     * se manda el código que llegó por SMS o correo para recibir los tokens.
+     */
+    @PostMapping("/login-verificar")
+    public Map<String, Object> loginVerificar(@Valid @RequestBody LoginVerificarRequest req, HttpServletRequest http) {
+        return auth.verificarSegundoFactor(req.desafio(), req.codigo(), ContextoPeticion.de(http));
     }
 
     /** El navegador o la app mandan solo el id_token de Google; nombre y correo se leen del token verificado. */

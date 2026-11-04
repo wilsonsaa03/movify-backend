@@ -35,6 +35,22 @@ public class CatalogoServicio {
                         Integer.class));
     }
 
+    /** app_version_minima / app_version_ultima / app_url_android (configuracion_sistema, V20). */
+    public Map<String, Object> versionApp() {
+        Map<String, Object> r = new java.util.LinkedHashMap<>();
+        r.put("minima", "1.0.0");
+        r.put("ultima", "1.0.0");
+        r.put("url_android", "https://play.google.com/store/apps/details?id=co.movify.app");
+        for (Map<String, Object> f : db.queryForList("""
+                SELECT clave, valor FROM configuracion_sistema
+                WHERE clave IN ('app_version_minima', 'app_version_ultima', 'app_url_android')
+                """)) {
+            String clave = String.valueOf(f.get("clave"));
+            r.put(clave.equals("app_url_android") ? "url_android" : clave.replace("app_version_", ""), f.get("valor"));
+        }
+        return r;
+    }
+
     public List<Map<String, Object>> documentosLegales() {
         return db.queryForList("SELECT id, tipo, version, url, vigente_desde, obligatorio FROM documentos_legales WHERE activo ORDER BY tipo");
     }

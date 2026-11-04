@@ -11,10 +11,7 @@ import jakarta.servlet.http.HttpServletRequest;
 public record ContextoPeticion(String ip, String userAgent, String plataforma) {
 
     public static ContextoPeticion de(HttpServletRequest req) {
-        // Detrás de Apache el IP real llega en X-Forwarded-For
-        String ip = req.getHeader("X-Forwarded-For");
-        ip = ip == null || ip.isBlank() ? req.getRemoteAddr() : ip.split(",")[0].trim();
-        if (ip != null && ip.length() > 45) ip = ip.substring(0, 45);
+        String ip = ipCliente(req);
 
         String ua = req.getHeader("User-Agent");
         if (ua != null && ua.length() > 300) ua = ua.substring(0, 300);
@@ -26,5 +23,27 @@ public record ContextoPeticion(String ip, String userAgent, String plataforma) {
             p = u.contains("android") ? "android" : (u.contains("iphone") || u.contains("ipad")) ? "ios" : "web";
         }
         return new ContextoPeticion(ip, ua, p);
+    }
+
+    /**
+     * IP real del cliente. Detrás de Apache llega en X-Forwarded-For, pero el cliente puede mandar ese
+     * header inventado y Apache solo AGREGA la IP real al final: por eso se toma el último valor, y solo
+     * si la petición viene del propio servidor (el proxy). Si no, cualquiera falsificaría su IP en la
+     * bitácora y en el límite de peticiones.
+     */
+    public static String ipCliente(HttpServletRequest req) {
+        String remota = req.getRemoteAddr();
+        String ip = remota;
+        String xff = req.getHeader("X-Forwarded-For");
+        if (xff != null && !xff.isBlank() && esProxyLocal(remota)) {
+            String[] partes = xff.split(",");
+            ip = partes[partes.length - 1].trim();
+        }
+        if (ip != null && ip.length() > 45) ip = ip.substring(0, 45);
+        return ip;
+    }
+
+    private static boolean esProxyLocal(String ip) {
+        return ip != null && (ip.equals("127.0.0.1") || ip.equals("::1") || ip.equals("0:0:0:0:0:0:0:1"));
     }
 }

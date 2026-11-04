@@ -131,6 +131,9 @@ jobs:
               printf 'TWILIO_FROM=%s\n'         "$TWILIO_FROM"
               printf 'TWILIO_MESSAGING_SERVICE_SID=%s\n' "$TWILIO_MESSAGING_SERVICE_SID"
               printf 'DEMO_SIMULACION=false\n'
+              printf 'SMS_CONSOLA=false\n'
+              # Revisión de arranque (ProduccionSegura): no arranca con modos de prueba ni claves filtradas
+              printf 'APP_ENTORNO=produccion\n'
             } | sudo tee /etc/movify/movify.env > /dev/null
             sudo chmod 600 /etc/movify/movify.env
 

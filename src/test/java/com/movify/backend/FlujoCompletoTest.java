@@ -44,6 +44,7 @@ import com.movify.backend.servicios.TarifaServicio;
 @SpringBootTest(properties = {
         "app.sms.consola=true",
         "app.tareas.habilitadas=false",
+        "app.limites.habilitados=false",
         "app.demo.simulacion=false",
         "app.osrm.url=http://127.0.0.1:9",
         "app.admin.secret-code=CODIGO-PRUEBA-123",
@@ -64,6 +65,8 @@ class FlujoCompletoTest {
     JdbcTemplate db;
     @Autowired
     ProgramadoServicio programados;
+    @Autowired
+    com.movify.backend.seguridad.VigenciaTokens vigencia;
     final ObjectMapper json = new ObjectMapper();
 
     static String tokenCliente, tokenConductor, tokenAdmin, refreshConductor;
@@ -218,10 +221,24 @@ class FlujoCompletoTest {
         assertThat(mal.getResponse().getStatus()).isEqualTo(403);
         ok(post("/api/auth/registro-admin"), null, Map.of("nombre", "Admin Prueba", "correo", "admin.prueba@movify.co",
                 "password", "ClaveAdmin2026", "codigoAdmin", "CODIGO-PRUEBA-123"));
-        Map<String, Object> login = ok(post("/api/auth/login"), null,
+        // V19: el equipo entra en dos pasos. La contraseña sola NO da sesión: llega un código (aquí por correo,
+        // porque esta cuenta no tiene celular; en pruebas el código viene en la respuesta)
+        Map<String, Object> paso1 = ok(post("/api/auth/login"), null,
                 Map.of("correo", "admin.prueba@movify.co", "password", "ClaveAdmin2026"));
+        assertThat(paso1).containsEntry("segundoFactor", true).containsEntry("canal", "correo").doesNotContainKey("token");
+        assertThat((String) paso1.get("destino")).contains("•").doesNotContain("admin.prueba");
+        var malo = llamar(post("/api/auth/login-verificar"), null, Map.of("desafio", paso1.get("desafio"), "codigo",
+                "000000".equals(paso1.get("codigoDesarrollo")) ? "111111" : "000000"));
+        assertThat(malo.getResponse().getStatus()).isEqualTo(400);
+        assertThat(malo.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8)).contains("Te quedan 4 intentos");
+        Map<String, Object> login = ok(post("/api/auth/login-verificar"), null,
+                Map.of("desafio", paso1.get("desafio"), "codigo", paso1.get("codigoDesarrollo")));
         tokenAdmin = (String) login.get("token");
         assertThat(login.get("rol")).isEqualTo("admin");
+        assertThat(login.get("refreshToken")).isNotNull();
+        // El mismo código no sirve dos veces
+        assertThat(llamar(post("/api/auth/login-verificar"), null, Map.of("desafio", paso1.get("desafio"), "codigo",
+                paso1.get("codigoDesarrollo"))).getResponse().getStatus()).isEqualTo(401);
 
         List<Map<String, Object>> lista = lista(get("/api/transporte/admin/conductores"), tokenAdmin);
         assertThat(lista).anyMatch(c -> ((Number) c.get("conductor_id")).longValue() == idConductor);
@@ -875,6 +892,15 @@ class FlujoCompletoTest {
         assertThat(db.queryForObject("SELECT valor FROM configuracion_sistema WHERE clave = 'radio_busqueda_km'", String.class))
                 .isEqualTo("5");
 
+        // V20: versión mínima de la app. Pública (la app la pide antes de iniciar sesión) y solo acepta "1.2.0"
+        Map<String, Object> version = ok(get("/api/catalogos/app-version"), null, null);
+        assertThat(version).containsEntry("minima", "1.0.0").containsKey("url_android");
+        assertThat(llamar(put("/api/admin/configuracion/app_version_minima"), tokenAdmin, Map.of("valor", "uno punto dos"))
+                .getResponse().getStatus()).isEqualTo(400);
+        ok(put("/api/admin/configuracion/app_version_minima"), tokenAdmin, Map.of("valor", "1.2.0"));
+        assertThat(ok(get("/api/catalogos/app-version"), null, null)).containsEntry("minima", "1.2.0");
+        ok(put("/api/admin/configuracion/app_version_minima"), tokenAdmin, Map.of("valor", "1.0.0"));
+
         // Resumen con las alertas del menú y auditoría con el nombre de quien hizo cada acción
         Map<String, Object> totales = (Map<String, Object>) ok(get("/api/admin/resumen"), tokenAdmin, null).get("totales");
         assertThat(totales).containsKeys("alertas_viaje_pendientes", "pqrs_vencidas", "documentos_por_vencer", "programados_pendientes");
@@ -950,9 +976,42 @@ class FlujoCompletoTest {
                 .getResponse().getStatus()).isEqualTo(404);
         ok(post("/api/admin/equipo"), tokenAdmin, Map.of("identificador", "300 111 2233", "rol", "soporte"));
         assertThat(db.queryForObject("SELECT count(*) FROM usuario_roles WHERE usuario_id = ? AND rol = 'soporte'", Integer.class, idCliente)).isEqualTo(1);
+        // Ya es del equipo: la app (clave de 4 números) es un solo factor y no le abre sesión
+        var desdeApp = llamar(post("/api/auth/login-celular"), null, Map.of("celular", "3001112233", "clave", "2468"));
+        assertThat(desdeApp.getResponse().getStatus()).isEqualTo(403);
+        assertThat(desdeApp.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8)).contains("panel web");
         ok(delete("/api/admin/usuarios/" + idCliente + "/roles/soporte"), tokenAdmin, null);
         long idAdmin = db.queryForObject("SELECT usuario_id FROM usuario_roles WHERE rol = 'admin' LIMIT 1", Long.class);
         assertThat(llamar(delete("/api/admin/usuarios/" + idAdmin + "/roles/admin"), tokenAdmin, null).getResponse().getStatus()).isEqualTo(400);
+
+        // V18: al cambiarle los roles, su token anterior deja de servir (la caché dura como mucho 20 s)
+        vigencia.olvidar(idCliente);
+        assertThat(llamar(get("/api/usuarios/perfil"), tokenCliente, null).getResponse().getStatus()).isEqualTo(401);
+        tokenCliente = (String) ok(post("/api/auth/login-celular"), null, Map.of("celular", "3001112233", "clave", "2468")).get("token");
+        assertThat(llamar(get("/api/usuarios/perfil"), tokenCliente, null).getResponse().getStatus()).isEqualTo(200);
+
+        // Vigilancia: el admin ve los fallos por IP (el 401 de loginConCelularYClave ya quedó registrado)
+        Map<String, Object> seg = ok(get("/api/admin/seguridad/actividad"), tokenAdmin, null);
+        assertThat(seg).containsKeys("resumen_24h", "ips_sospechosas", "cuentas_bloqueadas_temporalmente", "eventos_recientes");
+        assertThat(((Number) ((Map<String, Object>) seg.get("resumen_24h")).get("fallidos")).intValue()).isPositive();
+        assertThat(llamar(get("/api/admin/seguridad/actividad"), tokenCliente, null).getResponse().getStatus()).isEqualTo(403);
+
+        // Comunicados (V19): el admin ve el alcance, envía y a cada cliente le llega a su bandeja
+        int alcance = ((Number) ok(get("/api/admin/comunicados/alcance?audiencia=clientes"), tokenAdmin, null).get("personas")).intValue();
+        assertThat(alcance).isPositive();
+        Map<String, Object> enviado = ok(post("/api/admin/comunicados"), tokenAdmin,
+                Map.of("titulo", "Paro en la vía Alterna", "mensaje", "Hoy hay paro: los viajes pueden tardar más.", "audiencia", "clientes"));
+        assertThat(((Number) enviado.get("personas")).intValue()).isEqualTo(alcance);
+        assertThat(db.queryForObject("SELECT count(*) FROM notificaciones WHERE usuario_id = ? AND tipo = 'sistema' AND titulo = 'Paro en la vía Alterna'",
+                Integer.class, idCliente)).isEqualTo(1);
+        // Los conductores (no son clientes) no lo reciben; el doble clic no lo manda dos veces
+        assertThat(db.queryForObject("SELECT count(*) FROM notificaciones WHERE usuario_id = ? AND titulo = 'Paro en la vía Alterna'",
+                Integer.class, idConductor)).isZero();
+        assertThat(llamar(post("/api/admin/comunicados"), tokenAdmin, Map.of("titulo", "Paro en la vía Alterna",
+                "mensaje", "Hoy hay paro: los viajes pueden tardar más.", "audiencia", "clientes")).getResponse().getStatus()).isEqualTo(409);
+        assertThat(lista(get("/api/admin/comunicados"), tokenAdmin)).anyMatch(c -> "clientes".equals(c.get("audiencia")));
+        assertThat(llamar(post("/api/admin/comunicados"), tokenCliente, Map.of("titulo", "Hola", "mensaje", "Mensaje falso",
+                "audiencia", "todos")).getResponse().getStatus()).isEqualTo(403);
 
         // Permisos: los de soporte se ajustan; los de admin son fijos
         assertThat(llamar(put("/api/admin/permisos"), tokenAdmin, Map.of("rol", "admin", "permiso", "tarifas.ver", "activo", false))

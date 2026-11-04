@@ -41,7 +41,8 @@ import io.jsonwebtoken.security.Keys;
         "app.jwt.secret=" + SeguridadJwtTest.SECRETO,
         "app.jwt.expiration=3600000",
         "app.cors.allowed-origins=http://localhost:8100" })
-@Import({ SecurityConfig.class, JwtFiltro.class, JwtUtil.class, SeguridadJwtTest.Protegido.class })
+@Import({ SecurityConfig.class, JwtFiltro.class, JwtUtil.class, LimitePeticionesFiltro.class, VigilanciaSeguridad.class,
+        SeguridadJwtTest.Protegido.class })
 class SeguridadJwtTest {
 
     static final String SECRETO = "secreto-de-pruebas-de-seguridad-movify-0123456789";

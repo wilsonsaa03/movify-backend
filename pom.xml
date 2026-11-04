@@ -7,7 +7,8 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.2.4</version>
+        <!-- 3.5.x: parches de seguridad de Spring Security, Spring Framework y Tomcat (3.2 ya no recibe) -->
+        <version>3.5.16</version>
         <relativePath/>
     </parent>
 
@@ -67,6 +68,11 @@
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
+        </dependency>
+        <!-- Desde Flyway 10 el soporte de PostgreSQL va en un módulo aparte -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
 
         <!-- CORREO (recuperar contraseña de la web) -->

@@ -247,6 +247,17 @@ public class AdminServicio {
             if (tel == null) throw new ReglaNegocioException(400, "Escribe un celular (3XX XXX XXXX) o un fijo (60X XXX XXXX)");
             return tel;
         }
+        if (clave.startsWith("app_version_")) {
+            // La app compara número por número: "1.2.0" sí, "uno" o "1.2 beta" no
+            if (!valor.matches("\\d{1,3}(\\.\\d{1,3}){0,2}")) {
+                throw new ReglaNegocioException(400, "Escribe la versión como en la tienda, por ejemplo 1.2.0");
+            }
+            return valor;
+        }
+        if (clave.equals("app_url_android")) {
+            if (!valor.startsWith("https://")) throw new ReglaNegocioException(400, "El enlace debe empezar por https://");
+            return valor;
+        }
         if (!actual.matches("-?\\d+(\\.\\d+)?")) {
             if (valor.isEmpty()) throw new ReglaNegocioException(400, "El valor no puede quedar vacío");
             return valor;

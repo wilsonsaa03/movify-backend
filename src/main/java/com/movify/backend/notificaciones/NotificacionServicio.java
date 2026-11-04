@@ -78,6 +78,48 @@ public class NotificacionServicio {
         }
     }
 
+    /**
+     * Comunicado masivo del admin: una fila de notificaciones (tipo 'sistema') por cada cuenta activa de la
+     * audiencia en un solo INSERT, y los push en segundo plano cuando la transacción queda confirmada.
+     * @param audiencia todos | clientes | conductores
+     * @return a cuántas personas les llegó
+     */
+    public int difundir(String audiencia, String titulo, String cuerpo, Long comunicadoId) {
+        Map<String, String> datos = new HashMap<>();
+        datos.put("evento", "comunicado");
+        datos.put("comunicado_id", String.valueOf(comunicadoId));
+        String t = Datos.recortar(titulo, 100);
+        String c = Datos.recortar(cuerpo, 300);
+        List<Map<String, Object>> filas = db.queryForList("""
+                INSERT INTO notificaciones (usuario_id, tipo, titulo, cuerpo, datos)
+                SELECT u.id, 'sistema', ?, ?, ?::jsonb FROM usuarios u
+                WHERE u.estado = 'activo' AND EXISTS (
+                    SELECT 1 FROM usuario_roles r WHERE r.usuario_id = u.id AND r.rol = ANY (?::text[]))
+                RETURNING id, usuario_id
+                """, t, c, aJson(datos), "{" + String.join(",", rolesDe(audiencia)) + "}");
+        DespuesDelCommit.ejecutar(() -> envios.execute(() -> filas.forEach(f ->
+                mandar(Datos.aLong(f.get("id")), Datos.aLong(f.get("usuario_id")), t, c, datos))));
+        return filas.size();
+    }
+
+    /** Cuántas cuentas activas recibirían un comunicado (para que el admin lo vea antes de enviar). */
+    public int alcance(String audiencia) {
+        Integer n = db.queryForObject("""
+                SELECT count(*) FROM usuarios u
+                WHERE u.estado = 'activo' AND EXISTS (
+                    SELECT 1 FROM usuario_roles r WHERE r.usuario_id = u.id AND r.rol = ANY (?::text[]))
+                """, Integer.class, "{" + String.join(",", rolesDe(audiencia)) + "}");
+        return n == null ? 0 : n;
+    }
+
+    private static List<String> rolesDe(String audiencia) {
+        return switch (audiencia) {
+            case "clientes" -> List.of("cliente");
+            case "conductores" -> List.of("conductor");
+            default -> List.of("cliente", "conductor");
+        };
+    }
+
     private void mandar(Long notificacionId, Long usuarioId, String titulo, String cuerpo, Map<String, String> datos) {
         try {
             List<String> tokens = db.queryForList(
