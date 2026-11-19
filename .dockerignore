@@ -1,0 +1,14 @@
+target/
+node_modules/
+uploads-conductores/
+movify-backend/
+.git/
+.github/
+.metals/
+.bloop/
+.vscode/
+docs/
+scripts/
+*.env
+.env*
+src/main/resources/application-local.properties
