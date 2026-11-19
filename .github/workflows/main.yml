@@ -96,11 +96,15 @@ jobs:
           if [ -z "$DOKPLOY_APPLICATION_ID" ]; then
             curl -sS -f "${DOKPLOY_URL%/}/api/project.all" -H "x-api-key: $DOKPLOY_API_KEY" -o proyectos.json \
               || { echo "::error::No se pudo consultar Dokploy: revisa DOKPLOY_URL y DOKPLOY_API_KEY"; exit 1; }
+            # La app del backend se llama "backend" en Dokploy y su nombre interno empieza por "movify-backend"
             DOKPLOY_APPLICATION_ID=$(jq -r --arg n "$NOMBRE_APP" \
-              '[.. | objects | select(has("applicationId") and (.name == $n or (.appName // "" | startswith($n))))
+              '[.. | objects | select(has("applicationId") and ((.appName // "" | startswith($n)) or .name == $n or .name == "backend"))
                 | .applicationId] | first // empty' proyectos.json)
             if [ -z "$DOKPLOY_APPLICATION_ID" ]; then
-              echo "::error::No hay ninguna aplicación llamada $NOMBRE_APP en Dokploy"
+              echo "::error::No hay ninguna aplicación $NOMBRE_APP (o backend) en Dokploy"
+              echo "Aplicaciones que se ven con esta API key:"
+              jq -r '.. | objects | select(has("applicationId")) | "  - \(.name // "?") (\(.appName // "?"))"' proyectos.json || true
+              echo "Claves del primer proyecto: $(jq -c 'if type == "array" then (.[0] | keys) else keys end' proyectos.json)"
               exit 1
             fi
             echo "Aplicación $NOMBRE_APP encontrada"
