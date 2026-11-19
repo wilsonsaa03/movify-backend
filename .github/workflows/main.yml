@@ -72,7 +72,7 @@ jobs:
   # Secrets del repo (Settings → Secrets and variables → Actions):
   #   DOKPLOY_URL             p. ej. https://dokploy.midominio.com  (sin / al final)
   #   DOKPLOY_API_KEY         Dokploy → Settings → Profile → API/CLI → Generate token
-  #   DOKPLOY_APPLICATION_ID  el id de la app del backend (aparece en la URL de la app en Dokploy)
+  #   DOKPLOY_APPLICATION_ID  opcional: si no está, se busca la app llamada "movify-backend" con la API
   # En Dokploy, apaga "Autodeploy" de la app para que no despliegue antes de que pasen las pruebas.
   deploy:
     name: Desplegar en Dokploy
@@ -85,11 +85,25 @@ jobs:
           DOKPLOY_URL: ${{ secrets.DOKPLOY_URL }}
           DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
           DOKPLOY_APPLICATION_ID: ${{ secrets.DOKPLOY_APPLICATION_ID }}
+          NOMBRE_APP: movify-backend
         run: |
           set -e
-          if [ -z "$DOKPLOY_URL" ] || [ -z "$DOKPLOY_API_KEY" ] || [ -z "$DOKPLOY_APPLICATION_ID" ]; then
-            echo "::error::Faltan los secrets DOKPLOY_URL, DOKPLOY_API_KEY o DOKPLOY_APPLICATION_ID"
+          if [ -z "$DOKPLOY_URL" ] || [ -z "$DOKPLOY_API_KEY" ]; then
+            echo "::error::Faltan los secrets DOKPLOY_URL o DOKPLOY_API_KEY"
             exit 1
+          fi
+          # Sin el id: se busca en todos los proyectos la aplicación con ese nombre
+          if [ -z "$DOKPLOY_APPLICATION_ID" ]; then
+            curl -sS -f "${DOKPLOY_URL%/}/api/project.all" -H "x-api-key: $DOKPLOY_API_KEY" -o proyectos.json \
+              || { echo "::error::No se pudo consultar Dokploy: revisa DOKPLOY_URL y DOKPLOY_API_KEY"; exit 1; }
+            DOKPLOY_APPLICATION_ID=$(jq -r --arg n "$NOMBRE_APP" \
+              '[.. | objects | select(has("applicationId") and (.name == $n or (.appName // "" | startswith($n))))
+                | .applicationId] | first // empty' proyectos.json)
+            if [ -z "$DOKPLOY_APPLICATION_ID" ]; then
+              echo "::error::No hay ninguna aplicación llamada $NOMBRE_APP en Dokploy"
+              exit 1
+            fi
+            echo "Aplicación $NOMBRE_APP encontrada"
           fi
           codigo=$(curl -sS -o respuesta.txt -w '%{http_code}' -X POST "${DOKPLOY_URL%/}/api/application.deploy" \
             -H "x-api-key: $DOKPLOY_API_KEY" -H 'Content-Type: application/json' \
