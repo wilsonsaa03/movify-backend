@@ -435,7 +435,7 @@ class FlujoCompletoTest {
         // 4. Completa: queda pendiente y se le ofrece al conductor; el cliente la cancela y deja de verla
         Map<String, Object> datos = Map.of("origen_lat", LAT, "origen_lng", LNG, "destino_lat", 3.87, "destino_lng", -77.04,
                 "tipo", "encomienda", "descripcion", "Caja con ropa", "nombre_destinatario", "Carmen Valencia",
-                "telefono_destinatario", "3105556677", "tipo_paquete", "caja-mediana", "peso_kg", "3");
+                "telefono_destinatario", "3105556677", "tipo_paquete", "caja-pequeña", "peso_kg", "3"); // V25: la moto lleva hasta pequeño
         Map<String, Object> s = ok(post("/api/servicios"), tokenCliente, datos);
         long id = ((Number) s.get("id")).longValue();
         assertThat(s.get("estado")).isEqualTo("PENDIENTE");
@@ -474,7 +474,7 @@ class FlujoCompletoTest {
         assertThat(compraSinValor.getResponse().getStatus()).isEqualTo(400);
         var categoriaRara = llamar(post("/api/servicios"), tokenCliente, Map.of("origen_lat", LAT, "origen_lng", LNG,
                 "destino_lat", 3.87, "destino_lng", -77.04, "tipo", "domicilio", "descripcion", "Acetaminofén",
-                "categoria", "licores"));
+                "categoria", "armas")); // V24: licores y tienda ya son categorías válidas
         assertThat(categoriaRara.getResponse().getStatus()).isEqualTo(400);
         assertThat(db.queryForObject("SELECT count(*) FROM servicios WHERE cliente_id = ?", Integer.class, idCliente))
                 .isEqualTo(antes);

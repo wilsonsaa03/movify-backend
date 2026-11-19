@@ -68,102 +68,35 @@ jobs:
           path: target/*.jar
           retention-days: 7
 
-  # Solo despliega lo que ya compiló y pasó pruebas (el VPS no necesita git, Maven ni token de GitHub)
+  # Solo despliega lo que ya compiló y pasó pruebas. Dokploy construye la imagen con el Dockerfile del repo.
+  # Secrets del repo (Settings → Secrets and variables → Actions):
+  #   DOKPLOY_URL             p. ej. https://dokploy.midominio.com  (sin / al final)
+  #   DOKPLOY_API_KEY         Dokploy → Settings → Profile → API/CLI → Generate token
+  #   DOKPLOY_APPLICATION_ID  el id de la app del backend (aparece en la URL de la app en Dokploy)
+  # En Dokploy, apaga "Autodeploy" de la app para que no despliegue antes de que pasen las pruebas.
   deploy:
-    name: Desplegar en el VPS
+    name: Desplegar en Dokploy
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: app-jar
-          path: dist
-
-      - name: Preparar jar
-        run: |
-          JAR=$(ls dist/*.jar | grep -v plain | head -1)
-          mkdir -p subir && cp "$JAR" subir/app-new.jar
-
-      - name: Subir jar
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT }}
-          source: subir/app-new.jar
-          target: /var/www/ds2/movify-api
-          strip_components: 1
-
-      - name: Configurar secretos y reiniciar
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Pedir el deploy a Dokploy
         env:
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
-          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
-          ADMIN_SECRET_CODE: ${{ secrets.ADMIN_SECRET_CODE }}
-          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
-          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
-          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
-          TWILIO_MESSAGING_SERVICE_SID: ${{ secrets.TWILIO_MESSAGING_SERVICE_SID }}
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT }}
-          envs: DB_PASSWORD,JWT_SECRET,MAIL_PASSWORD,ADMIN_SECRET_CODE,TWILIO_ACCOUNT_SID,TWILIO_AUTH_TOKEN,TWILIO_FROM,TWILIO_MESSAGING_SERVICE_SID
-          command_timeout: 10m
-          script: |
-            set -e
-            APP=/var/www/ds2/movify-api
-
-            # 1) Secretos fuera del repo: archivo legible solo por root, cargado por systemd
-            sudo mkdir -p /etc/movify
-            umask 077
-            {
-              printf 'DB_PASSWORD=%s\n'       "$DB_PASSWORD"
-              printf 'JWT_SECRET=%s\n'        "$JWT_SECRET"
-              printf 'MAIL_PASSWORD=%s\n'     "$MAIL_PASSWORD"
-              printf 'ADMIN_SECRET_CODE=%s\n' "$ADMIN_SECRET_CODE"
-              printf 'TWILIO_ACCOUNT_SID=%s\n'  "$TWILIO_ACCOUNT_SID"
-              printf 'TWILIO_AUTH_TOKEN=%s\n'   "$TWILIO_AUTH_TOKEN"
-              printf 'TWILIO_FROM=%s\n'         "$TWILIO_FROM"
-              printf 'TWILIO_MESSAGING_SERVICE_SID=%s\n' "$TWILIO_MESSAGING_SERVICE_SID"
-              printf 'DEMO_SIMULACION=false\n'
-              printf 'SMS_CONSOLA=false\n'
-              # Revisión de arranque (ProduccionSegura): no arranca con modos de prueba ni claves filtradas
-              printf 'APP_ENTORNO=produccion\n'
-            } | sudo tee /etc/movify/movify.env > /dev/null
-            sudo chmod 600 /etc/movify/movify.env
-
-            sudo mkdir -p /etc/systemd/system/movify.service.d
-            printf '[Service]\nEnvironmentFile=/etc/movify/movify.env\n' \
-              | sudo tee /etc/systemd/system/movify.service.d/env.conf > /dev/null
-            sudo systemctl daemon-reload
-
-            # 2) Limpiar el token de GitHub que dejó el deploy anterior en .git/config
-            if [ -d "$APP/.git" ]; then
-              git -C "$APP" remote set-url origin https://github.com/wilsonsaa03/movify-backend.git || true
-            fi
-
-            # 3) Cambiar el jar guardando el anterior para poder volver atrás
-            cd "$APP"
-            [ -f app.jar ] && cp app.jar app-prev.jar
-            mv app-new.jar app.jar
-            sudo systemctl restart movify
-
-            # 4) Healthcheck; si falla, se restaura la versión anterior
-            for i in $(seq 1 20); do
-              sleep 3
-              if curl -fs http://localhost:8080/api/test/ping > /dev/null; then
-                echo "Backend arriba"; exit 0
-              fi
-              echo "Esperando backend ($i/20)..."
-            done
-            echo "El backend no respondió; restaurando versión anterior"
-            sudo journalctl -u movify -n 80 --no-pager || true
-            if [ -f app-prev.jar ]; then
-              mv app-prev.jar app.jar && sudo systemctl restart movify
-            fi
+          DOKPLOY_URL: ${{ secrets.DOKPLOY_URL }}
+          DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
+          DOKPLOY_APPLICATION_ID: ${{ secrets.DOKPLOY_APPLICATION_ID }}
+        run: |
+          set -e
+          if [ -z "$DOKPLOY_URL" ] || [ -z "$DOKPLOY_API_KEY" ] || [ -z "$DOKPLOY_APPLICATION_ID" ]; then
+            echo "::error::Faltan los secrets DOKPLOY_URL, DOKPLOY_API_KEY o DOKPLOY_APPLICATION_ID"
             exit 1
+          fi
+          codigo=$(curl -sS -o respuesta.txt -w '%{http_code}' -X POST "${DOKPLOY_URL%/}/api/application.deploy" \
+            -H "x-api-key: $DOKPLOY_API_KEY" -H 'Content-Type: application/json' \
+            -d "{\"applicationId\":\"$DOKPLOY_APPLICATION_ID\"}")
+          echo "Dokploy respondió $codigo"
+          if [ "$codigo" -ge 300 ]; then
+            cat respuesta.txt
+            exit 1
+          fi
+          echo "Deploy en marcha: míralo en Dokploy → app del backend → Deployments"

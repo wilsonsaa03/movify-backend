@@ -99,6 +99,34 @@ class SimulacionFlujoTest {
         idTaxi = db.queryForObject("SELECT id FROM usuarios WHERE telefono = '+573000000003'", Long.class);
     }
 
+    /**
+     * Si una prueba falla a mitad de camino, su servicio queda abierto y la siguiente no puede pedir otro
+     * ("Ya tienes un viaje en curso"). Antes de cada prueba se cierran: los que van en curso se finalizan y los
+     * que no arrancaron (buscando, asignado, en el origen) se cancelan, que es lo que permite la máquina de estados.
+     */
+    @BeforeEach
+    void finalizarServiciosEnCurso() {
+        db.execute("""
+                DO $$
+                DECLARE s RECORD;
+                BEGIN
+                    FOR s IN SELECT id, estado, tipo_servicio FROM servicios
+                              WHERE estado IN ('buscando', 'asignado', 'en_origen', 'en_curso') LOOP
+                        BEGIN
+                            IF s.estado = 'en_curso' AND s.tipo_servicio = 'transporte' THEN
+                                UPDATE servicios SET estado = 'finalizado' WHERE id = s.id;
+                            ELSE
+                                UPDATE servicios SET estado = 'cancelado' WHERE id = s.id;
+                            END IF;
+                        EXCEPTION WHEN OTHERS THEN
+                            UPDATE servicios SET estado = 'cancelado' WHERE id = s.id;
+                        END;
+                    END LOOP;
+                    DELETE FROM simulacion_viajes;
+                END $$;
+                """);
+    }
+
     @BeforeEach
     void callesEnL() {
         // Cada tramo a → b va primero por la "calle" horizontal y después por la vertical (dobla en una esquina)
@@ -135,7 +163,8 @@ class SimulacionFlujoTest {
         Map<String, Object> s = ok(post("/api/servicios"), cliente, Map.of("origen_lat", LAT, "origen_lng", LNG,
                 "destino_lat", 3.8700, "destino_lng", -77.0400, "tipo", "encomienda", "descripcion", "Caja con ropa",
                 "nombre_destinatario", "Carmen Valencia", "telefono_destinatario", "3105556677",
-                "tipo_paquete", "caja-mediana", "peso_kg", "3"));
+                // V25: en moto solo caben sobres y paquetes pequeños
+                "tipo_paquete", "caja-pequeña", "peso_kg", "3"));
         recorrer("ENCOMIENDA", ((Number) s.get("id")).longValue(), moto, idMoto, Map.of(),
                 Map.of("codigo_entrega", s.get("codigo_entrega")), 32);
         assertThat(db.queryForObject("SELECT entregado_a FROM servicio_encomienda WHERE servicio_id = ?", String.class,

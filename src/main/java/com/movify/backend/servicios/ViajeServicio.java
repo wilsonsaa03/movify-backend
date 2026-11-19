@@ -330,7 +330,7 @@ public class ViajeServicio {
         if (c == null) return null;
         c = c.trim().toLowerCase(Locale.ROOT);
         if (!CATEGORIAS_DOMICILIO.contains(c)) {
-            throw new ReglaNegocioException(400, "Elige qué es el pedido: comida, farmacia, mercado o diligencia");
+            throw new ReglaNegocioException(400, "Elige qué es el pedido: comida, farmacia, mercado, diligencia, licores o tienda");
         }
         return c;
     }

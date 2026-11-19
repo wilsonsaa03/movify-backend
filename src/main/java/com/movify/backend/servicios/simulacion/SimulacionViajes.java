@@ -484,7 +484,7 @@ public class SimulacionViajes {
                 }
                 case "velocidad" -> {
                     if (velocidadKmh == null || velocidadKmh < VELOCIDAD_CONTROL_MIN_KMH || velocidadKmh > VELOCIDAD_CONTROL_MAX_KMH) {
-                        throw new ReglaNegocioException("La velocidad debe estar entre 5 y 120 km/h");
+                        throw new ReglaNegocioException(400, "La velocidad debe estar entre 5 y 120 km/h");
                     }
                     nuevo = e.estado();
                     velocidad = velocidadKmh;
