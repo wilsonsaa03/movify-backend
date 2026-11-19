@@ -97,8 +97,14 @@ public class SecurityConfig {
                             .permitAll()
                         // Seguir un viaje compartido: lo abre la familia sin cuenta (token aleatorio que vence)
                         .requestMatchers(HttpMethod.GET, "/api/publico/viajes/*").permitAll()
+                        // Rastreo de una encomienda sin cuenta (token de 256 bits, datos limitados, vence solo)
+                        .requestMatchers(HttpMethod.GET, "/api/publico/encomiendas/*").permitAll()
+                        // WebSocket: el apretón de manos no lleva token; el JWT va en el primer mensaje (CanalTiempoReal)
+                        .requestMatchers(HttpMethod.GET, "/ws/tiempo-real").permitAll()
                         // Fotos de perfil: el nombre del archivo es un UUID imposible de adivinar (van en <img src>)
                         .requestMatchers(HttpMethod.GET, "/api/usuarios/*/foto/**").permitAll()
+                        // Fotos del catálogo de domicilios (comercios y productos): también van en <img src>
+                        .requestMatchers(HttpMethod.GET, "/api/domicilios/fotos/*").permitAll()
                         // Panel administrativo: solo personal; el permiso exacto se revisa en cada método
                         .requestMatchers("/api/admin/**", "/api/transporte/admin/**", "/api/auth/usuarios/**")
                             .hasAnyRole("ADMIN", "SOPORTE")

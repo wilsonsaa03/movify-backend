@@ -38,6 +38,8 @@ import com.movify.backend.seguridad.UsuarioAutenticado;
 import com.movify.backend.servicios.ServicioDtos.CambioEstadoRequest;
 import com.movify.backend.servicios.ServicioDtos.ItemDomicilio;
 import com.movify.backend.servicios.ServicioDtos.SolicitudRequest;
+import com.movify.backend.servicios.pagos.PagoServicio;
+import com.movify.backend.tiemporeal.TiempoReal;
 
 /**
  * Ciclo de vida de un servicio (transporte, domicilio o encomienda) sobre el modelo v2.3:
@@ -51,7 +53,8 @@ public class ViajeServicio {
     private static final Logger log = LoggerFactory.getLogger(ViajeServicio.class);
 
     private static final SecureRandom RANDOM = new SecureRandom();
-    private static final List<String> CATEGORIAS_DOMICILIO = List.of("comida", "farmacia", "mercado", "diligencia");
+    /** V24: también licores y tienda (domicilios con catálogo). */
+    private static final List<String> CATEGORIAS_DOMICILIO = List.of("comida", "farmacia", "mercado", "diligencia", "licores", "tienda");
     /** Si la base no tiene el parámetro tope_compra_domicilio (se cambia desde el panel). */
     static final BigDecimal TOPE_COMPRA_DOMICILIO = new BigDecimal("500000");
     private static final BigDecimal CIEN = new BigDecimal("100");
@@ -71,10 +74,13 @@ public class ViajeServicio {
     private final EncomiendaServicio encomiendas;
     private final NotificacionServicio avisos;
     private final SmsEnviador sms;
+    private final TiempoReal tiempoReal;
+    private final EvidenciaServicio evidencias;
+    private final PagoServicio pagos;
 
     public ViajeServicio(JdbcTemplate db, SesionActual sesion, TarifaServicio tarifas, ActorBd actor,
             ObjectProvider<SimulacionDemo> simulacion, EncomiendaServicio encomiendas, NotificacionServicio avisos,
-            SmsEnviador sms) {
+            SmsEnviador sms, TiempoReal tiempoReal, EvidenciaServicio evidencias, PagoServicio pagos) {
         this.db = db;
         this.sesion = sesion;
         this.tarifas = tarifas;
@@ -83,6 +89,9 @@ public class ViajeServicio {
         this.encomiendas = encomiendas;
         this.avisos = avisos;
         this.sms = sms;
+        this.tiempoReal = tiempoReal;
+        this.evidencias = evidencias;
+        this.pagos = pagos;
     }
 
     // ═════════════════════════════ Solicitud ═════════════════════════════
@@ -98,15 +107,16 @@ public class ViajeServicio {
         String tipo = EstadosServicio.tipoServicio(s.tipo());
         String vehiculo = s.tipoVehiculo() == null || s.tipoVehiculo().isBlank()
                 ? "moto" : s.tipoVehiculo().trim().toLowerCase(Locale.ROOT);
-        if (s.metodoPago() != null && !s.metodoPago().isBlank() && !"efectivo".equalsIgnoreCase(s.metodoPago().trim())) {
-            throw new ReglaNegocioException(400, "Por ahora en MoviFY solo se paga en efectivo.");
-        }
+        // Efectivo, o Nequi/Daviplata si los pagos digitales están habilitados (PagoServicio)
+        String metodoPago = pagos.validarMetodo(s.metodoPago(), tipo, s.pagaDestinatario());
         Extras x = extras(s, tipo, vehiculo, clienteId);
 
         TarifaServicio.Ruta ruta = tarifas.ruta(s.origenLat(), s.origenLng(), x.paradaLat(), x.paradaLng(),
                 s.destinoLat(), s.destinoLng());
-        // Lo que cotiza MoviFY; el cliente puede ofrecer más (estilo inDrive) hasta un tope
-        BigDecimal cotizado = tarifas.cotizar(tipo, vehiculo, ruta);
+        // Lo que cotiza MoviFY; el cliente puede ofrecer más (estilo inDrive) hasta un tope.
+        // Encomienda (V25): ruta + peso facturable, bultos, frágiles y protección, con la misma cuenta de la cotización.
+        EncomiendaServicio.Preparada encomienda = "encomienda".equals(tipo) ? encomiendas.preparar(s, vehiculo, ruta) : null;
+        BigDecimal cotizado = encomienda != null ? encomienda.cotizacion().total() : tarifas.cotizar(tipo, vehiculo, ruta);
         BigDecimal valor = valorOfrecido(s.valorOfrecido(), cotizado);
         actor.declarar(clienteId, ActorBd.CLIENTE);
 
@@ -116,8 +126,8 @@ public class ViajeServicio {
                     destino_direccion, destino_barrio, destino_referencia, destino_lat, destino_lng,
                     distancia_km, duracion_estimada_min, pasajeros, notas_cliente,
                     valor_estimado, valor_sugerido, pasajero_nombre, pasajero_telefono,
-                    necesita_casco, lleva_equipaje, lleva_mascota, parada_direccion, parada_lat, parada_lng)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    necesita_casco, lleva_equipaje, lleva_mascota, parada_direccion, parada_lat, parada_lng, metodo_pago)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id, valor_estimado, expira_busqueda_en
                 """, tipo, vehiculo, clienteId,
                 direccion(s.origen(), s.origenLat(), s.origenLng()), Datos.vacioANull(s.origenBarrio()),
@@ -128,14 +138,14 @@ public class ViajeServicio {
                 Datos.vacioANull("transporte".equals(tipo) ? Datos.recortar(firstNonBlank(s.notas(), s.descripcion()), 300)
                         : s.notas()),
                 valor, cotizado, x.pasajeroNombre(), x.pasajeroTelefono(), x.casco(), x.equipaje(), x.mascota(),
-                x.parada(), x.paradaLat(), x.paradaLng());
+                x.parada(), x.paradaLat(), x.paradaLng(), metodoPago);
         Long servicioId = Datos.aLong(fila.get("id"));
 
         String codigoEntrega = null;
         String codigoAbordaje = null;
         switch (tipo) {
             case "domicilio" -> crearDomicilio(servicioId, s);
-            case "encomienda" -> codigoEntrega = encomiendas.crear(servicioId, s, clienteId);
+            case "encomienda" -> codigoEntrega = encomiendas.crear(servicioId, s, clienteId, encomienda);
             default -> {
                 // Viaje: PIN que el pasajero le dice al conductor para empezar (Figma "Conductor app 4 · PIN")
                 codigoAbordaje = String.format("%04d", RANDOM.nextInt(10_000));
@@ -426,9 +436,15 @@ public class ViajeServicio {
             s.put("categoria", db.queryForList("SELECT categoria FROM servicio_domicilio WHERE servicio_id = ?",
                     String.class, servicioId).stream().findFirst().orElse(null));
             s.put("items", db.queryForList("""
-                    SELECT descripcion, cantidad, precio_unitario_aprox, notas FROM servicio_domicilio_items
-                    WHERE servicio_id = ? ORDER BY id
+                    SELECT descripcion, cantidad, precio_unitario_aprox, notas, producto_id, precio_unitario, opciones::text AS opciones,
+                           total_linea
+                    FROM servicio_domicilio_items WHERE servicio_id = ? ORDER BY id
                     """, servicioId));
+            // V24: domicilio con catálogo (comercio aliado, cupón y productos +18)
+            db.queryForList("""
+                    SELECT comercio_id, subtotal_catalogo, descuento, cupon_codigo, solo_mayores
+                    FROM servicio_domicilio WHERE servicio_id = ?
+                    """, servicioId).stream().findFirst().ifPresent(s::putAll);
         }
         // Para la tarjeta del pasajero en la solicitud (estrellas y "VERIFICADA") y la nota de voz del punto de referencia
         db.queryForList("""
@@ -437,14 +453,27 @@ public class ViajeServicio {
                 FROM servicios s JOIN usuarios u ON u.id = s.cliente_id
                 WHERE s.id = ?
                 """, servicioId).stream().findFirst().ifPresent(s::putAll);
-        // El celular del cliente solo lo ve el conductor asignado (y el personal), no quien recibe la oferta
-        // Lo mismo con los celulares de remitente y destinatario de una encomienda (vienen en v_servicios_api)
-        if (!soyCliente && !sesion.esPersonal() && !Objects.equals(conductorId, yo.id())) {
-            s.remove("usuario_telefono");
-            s.remove("pasajero_telefono");
+        // Celulares de remitente y destinatario de una encomienda: solo el cliente, el conductor asignado y el personal
+        boolean veContactos = soyCliente || sesion.esPersonal() || Objects.equals(conductorId, yo.id());
+        if (!veContactos) {
             s.remove("telefono_remitente");
             s.remove("telefono_destinatario");
         }
+        s.put("ve_contactos", veContactos);
+        // Llamada con número protegido (LlamadaServicio): ni el cliente ni el conductor ven el celular del otro.
+        // Solo el personal (soporte) los ve; el cliente sí ve el que él mismo escribió para quien viaja.
+        if (!sesion.esPersonal()) {
+            s.remove("conductor_telefono");
+            if (!soyCliente) {
+                s.remove("usuario_telefono");
+                s.remove("pasajero_telefono");
+            }
+        }
+        s.put("llamada_protegida", true);
+        // Forma de pago, el último cobro digital y la foto de la entrega
+        s.put("metodo_pago", db.queryForObject("SELECT metodo_pago FROM servicios WHERE id = ?", String.class, servicioId));
+        s.put("pago", pagos.resumen(servicioId));
+        s.put("foto_entrega_id", evidencias.ultimaEntrega(servicioId));
         s.remove("usuario_id");
         return s;
     }
@@ -511,6 +540,13 @@ public class ViajeServicio {
 
     @Transactional
     public Map<String, Object> cambiarEstado(Long servicioId, CambioEstadoRequest req) {
+        Map<String, Object> r = cambiarEstadoInterno(servicioId, req);
+        // El otro lo ve al instante (WebSocket); las pantallas igual siguen leyendo el servicio por HTTP
+        tiempoReal.publicar(servicioId, "estado", Map.of("estado", String.valueOf(r.get("estado_codigo"))));
+        return r;
+    }
+
+    private Map<String, Object> cambiarEstadoInterno(Long servicioId, CambioEstadoRequest req) {
         String destino = EstadosServicio.normalizar(req.estado());
         Map<String, Object> s = db.queryForList("""
                 SELECT id, tipo_servicio, tipo_vehiculo, estado, cliente_id, conductor_id
@@ -715,6 +751,8 @@ public class ViajeServicio {
 
     /** Antes de finalizar: PIN de la encomienda y valor real de la compra del domicilio. */
     private void prepararCierre(Long servicioId, String tipo, CambioEstadoRequest req, String quien) {
+        // Domicilio y encomienda: la foto de la entrega (la app la exige; el panel web no tiene cámara)
+        evidencias.exigirFotoEntrega(servicioId, tipo, quien);
         if ("encomienda".equals(tipo)) {
             encomiendas.prepararEntrega(servicioId, req, ActorBd.ADMIN.equals(quien) || ActorBd.SOPORTE.equals(quien));
         }

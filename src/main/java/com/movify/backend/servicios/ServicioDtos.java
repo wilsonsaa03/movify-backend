@@ -78,7 +78,10 @@ public final class ServicioDtos {
             @DecimalMin("-90") @DecimalMax("90") @JsonProperty("parada_lat") Double paradaLat,
             @DecimalMin("-180") @DecimalMax("180") @JsonProperty("parada_lng") Double paradaLng,
             /** Lo que el cliente ofrece pagar (≥ lo cotizado, con tope); null = lo cotizado. */
-            @JsonProperty("valor_ofrecido") BigDecimal valorOfrecido) {
+            @JsonProperty("valor_ofrecido") BigDecimal valorOfrecido,
+            // Encomienda (V25): varios bultos con medidas. Sin lista = un solo paquete (tipo_paquete, peso_kg…)
+            @Size(max = 50) @Valid List<com.movify.backend.servicios.encomiendas.EncomiendaDtos.BultoRequest> paquetes,
+            @Size(max = 300) @JsonProperty("instrucciones_entrega") String instruccionesEntrega) {
     }
 
     /** "Subir tarifa" mientras se busca conductor. */

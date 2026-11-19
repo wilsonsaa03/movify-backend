@@ -75,6 +75,12 @@
             <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
 
+        <!-- WEBSOCKET: ubicación, chat y estados en tiempo real (/ws/tiempo-real) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-websocket</artifactId>
+        </dependency>
+
         <!-- CORREO (recuperar contraseña de la web) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

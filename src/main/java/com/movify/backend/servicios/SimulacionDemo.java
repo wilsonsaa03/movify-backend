@@ -8,7 +8,6 @@ import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
@@ -16,36 +15,42 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import com.movify.backend.comun.ActorBd;
 import com.movify.backend.comun.Datos;
+import com.movify.backend.servicios.simulacion.SimulacionViajes;
 
 import jakarta.annotation.PreDestroy;
 
 /**
- * Simulación para demos y sustentación. SOLO se crea con app.demo.simulacion=true.
+ * Conductor de demostración para demos y sustentación. SOLO se crea con app.demo.simulacion=true.
  *
- * Si en 10 s ningún conductor acepta, un conductor de demostración aprobado (cuyo correo
- * empieza por "demo" y termina en @movify.co, ver scripts/datos_demo.sql) acepta el servicio
- * y recorre el viaje en línea recta hasta finalizarlo. Pasa por los mismos triggers que un
- * conductor real: nunca toca conductores reales ni crea usuarios.
+ * Si en 10 s ningún conductor acepta, un conductor demo aprobado (correo "demo…@movify.co",
+ * ver scripts/datos_demo.sql) acepta el servicio. El MOVIMIENTO lo hace SimulacionViajes (el mismo motor
+ * de todos los viajes: ruta OSRM por las calles). Aquí solo se decide cuándo cambiar de estado:
+ *   llegó al final de la recogida → en_origen → en_curso;   llegó al destino → finalizado.
+ * Pasa por los mismos triggers que un conductor real: nunca toca conductores reales ni crea usuarios.
  */
 @Component
 @ConditionalOnProperty(name = "app.demo.simulacion", havingValue = "true")
 public class SimulacionDemo {
 
     private static final Logger log = LoggerFactory.getLogger(SimulacionDemo.class);
-    private static final int PASOS = 10;
+    /** Cada cuánto se revisa si el vehículo ya llegó. */
+    private static final int REVISAR_S = 2;
+    /** Lo más que se espera un servicio (por si OSRM no responde nunca). */
+    private static final int MAXIMO_S = 3 * 60 * 60;
+    /** Lo que "tarda" en subir el pasajero o en recoger el pedido. */
+    private static final int ESPERA_EN_ORIGEN_S = 4;
 
     private final JdbcTemplate db;
     private final TransactionTemplate tx;
     private final ActorBd actor;
+    private final SimulacionViajes simulacion;
     private final ScheduledExecutorService planificador = Executors.newScheduledThreadPool(2);
 
-    @Value("${app.demo.segundos-por-paso:3}")
-    private int segundosPorPaso;
-
-    public SimulacionDemo(JdbcTemplate db, TransactionTemplate tx, ActorBd actor) {
+    public SimulacionDemo(JdbcTemplate db, TransactionTemplate tx, ActorBd actor, SimulacionViajes simulacion) {
         this.db = db;
         this.tx = tx;
         this.actor = actor;
+        this.simulacion = simulacion;
         log.warn("SIMULACIÓN DEMO ACTIVA: no usar en producción");
     }
 
@@ -55,10 +60,8 @@ public class SimulacionDemo {
 
     private void asignarSiNadieAcepto(Long servicioId) {
         try {
-            Map<String, Object> s = db.queryForList("""
-                    SELECT tipo_vehiculo, estado, origen_lat, origen_lng, destino_lat, destino_lng
-                    FROM servicios WHERE id = ?
-                    """, servicioId).stream().findFirst().orElse(null);
+            Map<String, Object> s = db.queryForList("SELECT tipo_vehiculo, estado, origen_lat, origen_lng FROM servicios WHERE id = ?",
+                    servicioId).stream().findFirst().orElse(null);
             if (s == null || !"buscando".equals(s.get("estado"))) return;
 
             List<Map<String, Object>> demo = db.queryForList("""
@@ -78,46 +81,53 @@ public class SimulacionDemo {
             }
             Long conductorId = Datos.aLong(demo.get(0).get("usuario_id"));
             double oLat = Datos.num(s.get("origen_lat")), oLng = Datos.num(s.get("origen_lng"));
-            double dLat = Datos.num(s.get("destino_lat")), dLng = Datos.num(s.get("destino_lng"));
 
             Boolean aceptado = tx.execute(st -> {
                 actor.declarar(conductorId, ActorBd.CONDUCTOR);
-                moverConductor(conductorId, oLat + 0.004, oLng + 0.004);
+                // Punto de partida a unos 700 m: SimulacionViajes lo pega a la calle y traza la recogida
+                moverConductor(conductorId, oLat + 0.0045, oLng + 0.0035);
                 return db.update("""
                         UPDATE servicios SET estado = 'asignado', conductor_id = ?, vehiculo_id = ?
                         WHERE id = ? AND estado = 'buscando'
                         """, conductorId, demo.get(0).get("vehiculo_id"), servicioId) == 1;
             });
             if (!Boolean.TRUE.equals(aceptado)) return; // un conductor real ya lo aceptó o el cliente canceló
-
-            recorrer(servicioId, conductorId, oLat + 0.004, oLng + 0.004, oLat, oLng, 0,
-                    () -> cambiar(servicioId, conductorId, "asignado", "en_origen")
-                            && cambiar(servicioId, conductorId, "en_origen", "en_curso"),
-                    () -> recorrer(servicioId, conductorId, oLat, oLng, dLat, dLng, 0, () -> true,
-                            () -> finalizar(servicioId, conductorId)));
+            vigilar(servicioId, conductorId, 0, REVISAR_S);
         } catch (Exception e) {
             log.error("Error en la simulación del servicio {}", servicioId, e);
         }
     }
 
-    /** Mueve el conductor un paso cada N segundos; si alguien cambió el estado por fuera, se detiene. */
-    private void recorrer(Long servicioId, Long conductorId, double aLat, double aLng, double bLat, double bLng,
-            int paso, java.util.function.BooleanSupplier alLlegar, Runnable despues) {
+    /** Revisa cada 2 s en qué va el vehículo simulado y avanza el estado del servicio cuando llega. */
+    private void vigilar(Long servicioId, Long conductorId, int segundos, int retraso) {
+        if (segundos > MAXIMO_S) return;
         planificador.schedule(() -> {
             try {
                 String estado = db.queryForObject("SELECT estado FROM servicios WHERE id = ?", String.class, servicioId);
-                if (!"asignado".equals(estado) && !"en_curso".equals(estado)) return;
-                double t = (paso + 1) / (double) PASOS;
-                tx.executeWithoutResult(st -> moverConductor(conductorId, aLat + (bLat - aLat) * t, aLng + (bLng - aLng) * t));
-                if (paso + 1 < PASOS) {
-                    recorrer(servicioId, conductorId, aLat, aLng, bLat, bLng, paso + 1, alLlegar, despues);
-                } else if (alLlegar.getAsBoolean()) {
-                    despues.run();
+                int espera = REVISAR_S;
+                switch (estado == null ? "" : estado) {
+                    case "asignado" -> {
+                        if (simulacion.llego(servicioId, SimulacionViajes.RECOGIDA)) {
+                            cambiar(servicioId, conductorId, "asignado", "en_origen");
+                            espera = ESPERA_EN_ORIGEN_S;
+                        }
+                    }
+                    case "en_origen" -> cambiar(servicioId, conductorId, "en_origen", "en_curso");
+                    case "en_curso" -> {
+                        if (simulacion.llego(servicioId, SimulacionViajes.DESTINO)) {
+                            finalizar(servicioId, conductorId);
+                            return;
+                        }
+                    }
+                    default -> {
+                        return; // cancelado, finalizado…
+                    }
                 }
+                vigilar(servicioId, conductorId, segundos + retraso, espera);
             } catch (Exception e) {
-                log.error("Error moviendo la simulación del servicio {}", servicioId, e);
+                log.error("Error siguiendo la simulación del servicio {}", servicioId, e);
             }
-        }, segundosPorPaso, TimeUnit.SECONDS);
+        }, retraso, TimeUnit.SECONDS);
     }
 
     private boolean cambiar(Long servicioId, Long conductorId, String desde, String hacia) {

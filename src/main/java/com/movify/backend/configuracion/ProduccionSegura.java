@@ -50,6 +50,14 @@ public class ProduccionSegura {
     private boolean smsConsola;
     @Value("${app.demo.simulacion:false}")
     private boolean simulacion;
+    @Value("${app.simulacion.viajes:false}")
+    private boolean simulacionViajes;
+    @Value("${app.pagos.modo:apagado}")
+    private String pagosModo = "apagado";
+    @Value("${app.pagos.wompi.url:}")
+    private String wompiUrl = "";
+    @Value("${app.pagos.wompi.llave-publica:}")
+    private String wompiLlave = "";
     @Value("${app.cors.allowed-origins:}")
     private String cors;
     @Value("${app.jwt.secret:}")
@@ -89,6 +97,14 @@ public class ProduccionSegura {
         List<String> p = new ArrayList<>();
         if (smsConsola) p.add("SMS_CONSOLA=true: el código SMS sale en la respuesta. En producción debe ser false.");
         if (simulacion) p.add("DEMO_SIMULACION=true: los viajes se simulan. En producción debe ser false.");
+        if (simulacionViajes) p.add("SIMULACION_VIAJES=true: el GPS real del conductor se ignora (SOS y seguimiento falsos). En producción debe ser false.");
+        if ("simulado".equalsIgnoreCase(pagosModo.trim())) {
+            p.add("PAGOS_MODO=simulado: los pagos con Nequi/Daviplata se aprueban sin cobrar. En producción: apagado o wompi.");
+        }
+        if ("wompi".equalsIgnoreCase(pagosModo.trim()) && (wompiUrl.contains("sandbox") || wompiLlave.startsWith("pub_test_"))) {
+            p.add("PAGOS_MODO=wompi con el SANDBOX o llaves de prueba: el cliente cree que pagó y no se cobra nada. "
+                    + "En producción usa https://production.wompi.co/v1 y llaves pub_prod_.");
+        }
         for (String o : cors.split(",")) {
             String origen = o.trim();
             if (origen.contains("*") || origen.startsWith("http://") && !origen.equals("http://localhost")) {

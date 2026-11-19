@@ -12,6 +12,7 @@ import com.movify.backend.comun.AccesoDenegadoException;
 import com.movify.backend.comun.Datos;
 import com.movify.backend.notificaciones.NotificacionServicio;
 import com.movify.backend.seguridad.SesionActual;
+import com.movify.backend.tiemporeal.TiempoReal;
 
 /** Chat cliente ↔ conductor de un servicio. Solo los dos participantes (y el personal) lo ven. */
 @Service
@@ -20,11 +21,13 @@ public class MensajeServicio {
     private final JdbcTemplate db;
     private final SesionActual sesion;
     private final NotificacionServicio avisos;
+    private final TiempoReal tiempoReal;
 
-    public MensajeServicio(JdbcTemplate db, SesionActual sesion, NotificacionServicio avisos) {
+    public MensajeServicio(JdbcTemplate db, SesionActual sesion, NotificacionServicio avisos, TiempoReal tiempoReal) {
         this.db = db;
         this.sesion = sesion;
         this.avisos = avisos;
+        this.tiempoReal = tiempoReal;
     }
 
     /** Devuelve los mensajes y marca como leídos los que le llegaron. */
@@ -46,9 +49,13 @@ public class MensajeServicio {
         Map<String, Object> s = exigirParticipante(servicioId);
         Long yo = sesion.usuarioId();
         String texto = contenido.trim();
-        Long id = db.queryForObject(
-                "INSERT INTO mensajes_servicio (servicio_id, remitente_id, contenido) VALUES (?, ?, ?) RETURNING id",
-                Long.class, servicioId, yo, texto);
+        Map<String, Object> nuevo = db.queryForMap(
+                "INSERT INTO mensajes_servicio (servicio_id, remitente_id, contenido) VALUES (?, ?, ?) RETURNING id, creado_en",
+                servicioId, yo, texto);
+        Long id = Datos.aLong(nuevo.get("id"));
+        // Al otro le aparece al instante si tiene el chat abierto (WebSocket); si no, le llega el push
+        tiempoReal.publicar(servicioId, "mensaje", Map.of("id", id, "remitente_id", yo, "contenido", texto,
+                "creado_en", String.valueOf(nuevo.get("creado_en"))));
         boolean soyCliente = Objects.equals(Datos.aLong(s.get("cliente_id")), yo);
         Long otro = Datos.aLong(s.get(soyCliente ? "conductor_id" : "cliente_id"));
         String nombre = db.queryForObject("SELECT split_part(trim(nombres), ' ', 1) FROM usuarios WHERE id = ?", String.class, yo);

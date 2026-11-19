@@ -22,6 +22,7 @@ import com.movify.backend.conductores.ConductorDtos.LicenciaRequest;
 import com.movify.backend.conductores.ConductorDtos.PerfilConductorRequest;
 import com.movify.backend.conductores.ConductorDtos.UbicacionRequest;
 import com.movify.backend.conductores.ConductorDtos.VehiculoRequest;
+import com.movify.backend.tiemporeal.TiempoReal;
 
 /**
  * Perfil del conductor, su vehículo, sus documentos y su disponibilidad.
@@ -37,11 +38,16 @@ public class ConductorServicio {
     private final JdbcTemplate db;
     private final ActorBd actor;
     private final ArchivoServicio archivos;
+    private final SelfieServicio selfies;
+    private final TiempoReal tiempoReal;
 
-    public ConductorServicio(JdbcTemplate db, ActorBd actor, ArchivoServicio archivos) {
+    public ConductorServicio(JdbcTemplate db, ActorBd actor, ArchivoServicio archivos, SelfieServicio selfies,
+            TiempoReal tiempoReal) {
         this.db = db;
         this.actor = actor;
         this.archivos = archivos;
+        this.selfies = selfies;
+        this.tiempoReal = tiempoReal;
     }
 
     // ───────────── Perfil ─────────────
@@ -529,6 +535,8 @@ public class ConductorServicio {
         if (activo && !"aprobado".equals(estado(usuarioId))) {
             throw new AccesoDenegadoException("Tu cuenta de conductor aún no está aprobada");
         }
+        // Selfie vigente: confirma que quien maneja es el dueño de la cuenta (428 → la app abre la cámara)
+        if (activo) selfies.exigirVigente(usuarioId);
         db.update("UPDATE conductores SET disponible = ? WHERE usuario_id = ?", activo, usuarioId);
         return Map.of("message", activo ? "Ahora estás en línea" : "Te desconectaste", "en_linea", activo,
                 "disponible", activo);
@@ -544,7 +552,21 @@ public class ConductorServicio {
                 SELECT s.id, s.conductor_id, ?, ?, ?, ?, ?
                 FROM servicios s
                 WHERE s.conductor_id = ? AND s.estado IN ('asignado', 'en_origen', 'en_curso')
+                  AND NOT EXISTS (SELECT 1 FROM simulacion_viajes sv WHERE sv.servicio_id = s.id)
                 """, u.lat(), u.lng(), u.velocidad(), u.rumbo(), u.precision(), usuarioId);
+        // Quien sigue el viaje ve moverse al vehículo al instante (WebSocket). Con simulación manda la simulación.
+        db.queryForList("""
+                SELECT s.id FROM servicios s
+                WHERE s.conductor_id = ? AND s.estado IN ('asignado', 'en_origen', 'en_curso')
+                  AND NOT EXISTS (SELECT 1 FROM simulacion_viajes sv WHERE sv.servicio_id = s.id)
+                """, Long.class, usuarioId).forEach(id -> {
+            Map<String, Object> pos = new HashMap<>();
+            pos.put("lat", u.lat());
+            pos.put("lng", u.lng());
+            pos.put("rumbo", u.rumbo());
+            pos.put("velocidad", u.velocidad());
+            tiempoReal.publicar(id, "ubicacion", pos);
+        });
     }
 
     private void guardarUbicacion(Long id, double lat, double lng, Integer rumbo, Double vel, Double precision) {
@@ -554,6 +576,8 @@ public class ConductorServicio {
                 ON CONFLICT (conductor_id) DO UPDATE
                    SET lat = EXCLUDED.lat, lng = EXCLUDED.lng, rumbo_grados = EXCLUDED.rumbo_grados,
                        velocidad_kmh = EXCLUDED.velocidad_kmh, precision_m = EXCLUDED.precision_m, actualizado_en = now()
+                -- Con un viaje simulado la posición la pone SimulacionViajes (ruta OSRM): el GPS del celular no la pisa
+                WHERE NOT EXISTS (SELECT 1 FROM simulacion_viajes sv WHERE sv.conductor_id = EXCLUDED.conductor_id)
                 """, id, lat, lng, rumbo, vel, precision);
     }
 

@@ -166,7 +166,7 @@ public class ProgramadoServicio {
                 null, null, "Viaje programado", ((Number) p.get("pasajeros")).intValue(), null, "efectivo", null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null,
                 (Boolean) p.get("necesita_casco"), (Boolean) p.get("lleva_equipaje"), (Boolean) p.get("lleva_mascota"),
-                (String) p.get("pasajero_nombre"), (String) p.get("pasajero_telefono"), null, null, null, null);
+                (String) p.get("pasajero_nombre"), (String) p.get("pasajero_telefono"), null, null, null, null, null, null);
         Map<String, Object> creado = viajes.crearSolicitud(cliente, s);
         Long servicio = Datos.aLong(creado.get("id"));
         db.update("UPDATE viajes_programados SET estado = 'enviado', servicio_id = ? WHERE id = ?", servicio, id);

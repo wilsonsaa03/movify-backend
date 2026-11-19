@@ -64,7 +64,10 @@ class EstadosServicioTest {
         assertEquals("farmacia", ViajeServicio.categoriaDomicilio(" Farmacia "));
         assertEquals(null, ViajeServicio.categoriaDomicilio(""));
         assertEquals(null, ViajeServicio.categoriaDomicilio(null));
+        // V24: licores (+18) y tienda también son categorías (domicilios con catálogo)
+        assertEquals("licores", ViajeServicio.categoriaDomicilio("Licores"));
+        assertEquals("tienda", ViajeServicio.categoriaDomicilio("tienda"));
         org.junit.jupiter.api.Assertions.assertThrows(com.movify.backend.comun.ReglaNegocioException.class,
-                () -> ViajeServicio.categoriaDomicilio("licores"));
+                () -> ViajeServicio.categoriaDomicilio("armas"));
     }
 }

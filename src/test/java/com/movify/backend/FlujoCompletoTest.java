@@ -267,6 +267,12 @@ class FlujoCompletoTest {
     @Test
     @Order(30)
     void viajeCompletoEnMoto() throws Exception {
+        // Sin selfie no se conecta (428: la app abre la cámara); con la selfie sí
+        var sinSelfie = llamar(post("/api/transporte/activar"), tokenConductor, Map.of("activo", true, "lat", LAT + 0.002, "lng", LNG));
+        assertThat(sinSelfie.getResponse().getStatus()).isEqualTo(428);
+        assertThat(ok(get("/api/conductor/selfie"), tokenConductor, null)).containsEntry("requerida", true);
+        selfie(tokenConductor);
+        assertThat(ok(get("/api/conductor/selfie"), tokenConductor, null)).containsEntry("requerida", false);
         ok(post("/api/transporte/activar"), tokenConductor, Map.of("activo", true, "lat", LAT + 0.002, "lng", LNG));
 
         Map<String, Object> cot = ok(get("/api/tarifas/cotizar?origen_lat=" + LAT + "&origen_lng=" + LNG
@@ -375,8 +381,16 @@ class FlujoCompletoTest {
         ok(patch("/api/transporte/servicio/" + id + "/estado"), tokenConductor, Map.of("estado", "PAQUETE_RECOGIDO"));
         var sinPin = llamar(patch("/api/transporte/servicio/" + id + "/estado"), tokenConductor, Map.of("estado", "FINALIZADO"));
         assertThat(sinPin.getResponse().getStatus()).isEqualTo(400);
+        // Desde la app, sin foto de la entrega tampoco se puede finalizar
+        var sinFoto = llamar(patch("/api/transporte/servicio/" + id + "/estado"), tokenConductor,
+                Map.of("estado", "FINALIZADO", "codigo_entrega", pin));
+        assertThat(sinFoto.getResponse().getStatus()).isEqualTo(400);
+        assertThat(sinFoto.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8)).contains("foto");
+        fotoEntrega(id, tokenConductor);
         ok(patch("/api/transporte/servicio/" + id + "/estado"), tokenConductor,
                 Map.of("estado", "FINALIZADO", "codigo_entrega", pin));
+        // El cliente ve la foto de la entrega; un extraño no
+        assertThat(lista(get("/api/servicios/" + id + "/evidencias"), tokenCliente)).hasSize(1);
         assertThat(db.queryForObject("SELECT entregado_a FROM servicio_encomienda WHERE servicio_id = ?", String.class, id))
                 .isEqualTo("Carmen Valencia");
     }
@@ -489,6 +503,7 @@ class FlujoCompletoTest {
         ok(patch("/api/transporte/servicio/" + id3 + "/estado"), tokenConductor, Map.of("estado", "PAQUETE_RECOGIDO"));
         var sinFactura = llamar(patch("/api/transporte/servicio/" + id3 + "/estado"), tokenConductor, Map.of("estado", "FINALIZADO"));
         assertThat(sinFactura.getResponse().getStatus()).isEqualTo(400);
+        fotoEntrega(id3, tokenConductor);
         ok(patch("/api/transporte/servicio/" + id3 + "/estado"), tokenConductor,
                 Map.of("estado", "FINALIZADO", "valor_compra_real", 27400));
         assertThat(db.queryForObject("SELECT estado FROM servicios WHERE id = ?", String.class, id3)).isEqualTo("finalizado");
@@ -536,6 +551,7 @@ class FlujoCompletoTest {
         assertThat(vehiculo).containsEntry("tipo_vehiculo", "taxi").containsEntry("placa", "TAX123")
                 .containsEntry("marca", "Chevrolet").containsEntry("linea", "Spark GT").containsEntry("color", "Amarillo");
 
+        selfie(tokenTaxista);
         ok(post("/api/transporte/activar"), tokenTaxista, Map.of("activo", true, "lat", LAT + 0.003, "lng", LNG));
         ok(post("/api/transporte/activar"), tokenConductor, Map.of("activo", true, "lat", LAT + 0.002, "lng", LNG));
 
@@ -1260,6 +1276,21 @@ class FlujoCompletoTest {
                 Map.of("celular", celular, "proposito", "registro", "codigo", c.get("codigoDesarrollo")));
         return ok(post("/api/auth/registro-movil"), null, Map.of("verificacionToken", v.get("verificacionToken"),
                 "rol", rol, "nombres", nombres, "apellidos", apellidos, "clave", clave, "aceptaTerminos", true));
+    }
+
+    /** Selfie del conductor antes de conectarse (V22). */
+    private void selfie(String token) throws Exception {
+        var res = mvc.perform(multipart("/api/conductor/selfie").file(new MockMultipartFile("foto", "selfie.png", "image/png", PNG))
+                .header("X-Plataforma", "android").header("Authorization", "Bearer " + token)).andReturn();
+        assertThat(res.getResponse().getStatus()).as(res.getResponse().getContentAsString()).isEqualTo(200);
+    }
+
+    /** Foto de la entrega (domicilio y encomienda desde la app). */
+    private void fotoEntrega(long servicioId, String token) throws Exception {
+        var res = mvc.perform(multipart("/api/servicios/" + servicioId + "/evidencias")
+                .file(new MockMultipartFile("foto", "entrega.png", "image/png", PNG)).param("tipo", "entrega")
+                .header("X-Plataforma", "android").header("Authorization", "Bearer " + token)).andReturn();
+        assertThat(res.getResponse().getStatus()).as(res.getResponse().getContentAsString()).isEqualTo(200);
     }
 
     private MvcResult llamar(MockHttpServletRequestBuilder req, String token, Object cuerpo) throws Exception {
