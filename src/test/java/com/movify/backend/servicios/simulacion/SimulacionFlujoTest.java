@@ -263,7 +263,9 @@ class SimulacionFlujoTest {
 
         // Avanza por la calle: después de un rato está más adelante, sigue sobre la ruta y le falta menos
         Thread.sleep(600);
-        simulacion.paso();
+        // El rastro (seguimiento_ubicaciones) se guarda cada 5 pasos con un contador global: 5 pasos seguidos
+        // garantizan al menos un punto sin depender del orden en que corren las pruebas
+        for (int i = 0; i < 5; i++) simulacion.paso();
         Map<String, Object> despues = sim(id, tokenConductor, null);
         assertThat(num(despues, "recorrido_m")).isGreaterThan(num(viaje, "recorrido_m"));
         assertThat(num(despues, "restante_m")).isLessThan(num(viaje, "restante_m"));
