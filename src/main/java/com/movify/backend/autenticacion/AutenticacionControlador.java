@@ -173,8 +173,12 @@ public class AutenticacionControlador {
 
     @PostMapping("/olvide-password")
     public Map<String, Object> olvidePassword(@Valid @RequestBody OlvidePasswordRequest req) {
-        auth.solicitarRecuperacion(req.correo());
-        return Map.of("message", "Si el correo está registrado, te enviamos un enlace para restablecer la contraseña.");
+        String enlace = auth.solicitarRecuperacion(req.correo());
+        Map<String, Object> r = new HashMap<>();
+        r.put("message", "Si el correo está registrado, te enviamos un enlace para restablecer la contraseña.");
+        // Modo desarrollo (SMS_CONSOLA=true): el enlace también en la respuesta, para probar sin correo configurado
+        if (sms.esModoConsola() && enlace != null) r.put("enlaceDesarrollo", enlace);
+        return r;
     }
 
     @PostMapping("/restablecer-password")

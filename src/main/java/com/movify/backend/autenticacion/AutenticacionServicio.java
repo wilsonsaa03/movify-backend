@@ -364,12 +364,18 @@ public class AutenticacionServicio {
      * Web: enlace por correo. Siempre responde lo mismo para no revelar si el correo existe, y el correo
      * sale en segundo plano: si se enviara aquí, la respuesta tardaría más cuando el correo SÍ existe.
      */
-    public void solicitarRecuperacion(String correoIngresado) {
+    /**
+     * Manda el correo con el enlace para restablecer la contraseña.
+     * @return la ruta del enlace (/restablecer-password?token=...) para el modo desarrollo, o null si el correo
+     *         no tiene cuenta. El controlador solo la entrega con SMS_CONSOLA=true.
+     */
+    public String solicitarRecuperacion(String correoIngresado) {
         Usuario u = usuarios.porEmail(correoIngresado.trim().toLowerCase(Locale.ROOT))
                 .filter(x -> x.passwordHash() != null).orElse(null);
-        if (u == null) return;
+        if (u == null) return null;
         String token = jwt.generarRestablecer(u.id(), huella(u.passwordHash()));
         CompletableFuture.runAsync(() -> enviarRecuperacion(u, token));
+        return "/restablecer-password?token=" + token;
     }
 
     private void enviarRecuperacion(Usuario u, String token) {
