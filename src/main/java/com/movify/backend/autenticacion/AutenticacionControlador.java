@@ -87,6 +87,8 @@ public class AutenticacionControlador {
         }
         if (CodigoVerificacionServicio.LOGIN.equals(proposito) && !existe) {
             r.put("vigenciaSeg", 300);
+            // Modo desarrollo: decir por qué no hay código (en producción no se revela si el número tiene cuenta)
+            if (sms.esModoConsola()) r.put("avisoDesarrollo", "Ese celular no tiene cuenta en este servidor. Regístrate primero.");
             return r;
         }
         CodigoVerificacionServicio.Envio envio = codigos.enviar(tel, proposito, ContextoPeticion.de(http).ip());
