@@ -93,7 +93,8 @@ public class SecurityConfig {
                                 "/api/auth/clave/restablecer",
                                 "/api/auth/olvide-password",
                                 "/api/auth/restablecer-password").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/test/ping", "/api/catalogos/**", "/api/tarifas/cotizar")
+                        .requestMatchers(HttpMethod.GET, "/api/test/ping", "/api/catalogos/**", "/api/tarifas/cotizar",
+                                "/api/auth/registro-admin/pista")
                             .permitAll()
                         // Seguir un viaje compartido: lo abre la familia sin cuenta (token aleatorio que vence)
                         .requestMatchers(HttpMethod.GET, "/api/publico/viajes/*").permitAll()

@@ -3,6 +3,8 @@ package com.movify.backend.autenticacion;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -22,6 +24,7 @@ import com.movify.backend.autenticacion.AuthDtos.RegistroUsuarioRequest;
 import com.movify.backend.autenticacion.AuthDtos.RestablecerClaveRequest;
 import com.movify.backend.autenticacion.AuthDtos.RestablecerPasswordRequest;
 import com.movify.backend.autenticacion.AuthDtos.VerificarCodigoRequest;
+import com.movify.backend.autenticacion.sms.SmsEnviador;
 import com.movify.backend.comun.Celular;
 import com.movify.backend.comun.ReglaNegocioException;
 import com.movify.backend.configuracion.ContextoPeticion;
@@ -37,12 +40,31 @@ public class AutenticacionControlador {
     private final AutenticacionServicio auth;
     private final CodigoVerificacionServicio codigos;
     private final UsuarioRepositorio usuarios;
+    private final SmsEnviador sms;
+
+    @Value("${app.admin.secret-code:}")
+    private String codigoAdmin;
 
     public AutenticacionControlador(AutenticacionServicio auth, CodigoVerificacionServicio codigos,
-            UsuarioRepositorio usuarios) {
+            UsuarioRepositorio usuarios, SmsEnviador sms) {
         this.auth = auth;
         this.codigos = codigos;
         this.usuarios = usuarios;
+        this.sms = sms;
+    }
+
+    /**
+     * Solo en modo desarrollo (SMS_CONSOLA=true, que ProduccionSegura bloquea en producción): la página
+     * /registro/admin muestra el código de administrador, igual que los demás códigos. Fuera de ese modo
+     * responde vacío y el código nunca sale del servidor.
+     */
+    @GetMapping("/registro-admin/pista")
+    public Map<String, Object> pistaRegistroAdmin() {
+        Map<String, Object> r = new HashMap<>();
+        if (sms.esModoConsola() && codigoAdmin != null && !codigoAdmin.isBlank()) {
+            r.put("codigoDesarrollo", codigoAdmin.trim());
+        }
+        return r;
     }
 
     // ───────────── Código SMS ─────────────
